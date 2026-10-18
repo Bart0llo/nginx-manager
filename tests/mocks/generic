@@ -1,0 +1,9 @@
+#!/bin/bash
+# Generic command mock: records the call and exits with a configurable code.
+# Exit code comes from /tmp/mock-rc/<name>-<first-arg>, then /tmp/mock-rc/<name>,
+# defaulting to 0.
+name=$(basename "$0")
+echo "$name $*" >> /tmp/mock-calls.log
+[[ -f "/tmp/mock-rc/$name-$1" ]] && exit "$(cat "/tmp/mock-rc/$name-$1")"
+[[ -f "/tmp/mock-rc/$name" ]] && exit "$(cat "/tmp/mock-rc/$name")"
+exit 0

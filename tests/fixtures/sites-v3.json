@@ -1,0 +1,16 @@
+{
+  "app": {
+    "domain": "app.lan.example.com",
+    "backend": "127.0.0.1:8080",
+    "tls": "https",
+    "enabled": true,
+    "created": "2025-01-01T00:00:00Z"
+  },
+  "legacy": {
+    "domain": "legacy.other.com",
+    "backend": "10.0.0.5:80",
+    "tls": "http",
+    "enabled": false,
+    "created": "2025-02-01T12:30:00Z"
+  }
+}

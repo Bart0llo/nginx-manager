@@ -1,0 +1,11 @@
+#!/bin/bash
+# Fake curl for installer tests: "downloads" $MOCK_CURL_FILE to the -o target.
+echo "curl $*" >> /tmp/mock-calls.log
+[[ -f /tmp/mock-rc/curl ]] && exit "$(cat /tmp/mock-rc/curl)"
+out=""
+while (($#)); do
+    [[ "$1" == "-o" ]] && { out="$2"; shift; }
+    shift
+done
+[[ -n "$out" && -f "$MOCK_CURL_FILE" ]] || exit 22
+cat "$MOCK_CURL_FILE" > "$out"
