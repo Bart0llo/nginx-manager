@@ -39,7 +39,43 @@ source "$NM_LIB_DIR/menu.sh"
 # ==========================================================
 # START
 # ==========================================================
+usage() {
+    cat <<EOF
+Usage: nginx-manager [--plain] [--non-interactive] [--help]
+
+Interactive manager for NGINX reverse proxy sites (runs as root).
+
+  --plain            use the basic text interface even if gum is installed
+  --non-interactive  never wait for input: stop with exit status 1 where
+                     an answer is needed
+  -h, --help         show this help
+
+Environment:
+  NM_UI=auto|gum|plain   interface (default auto: gum $UI_GUM_MIN+ in a terminal)
+  NM_NONINTERACTIVE=1    same as --non-interactive
+  NO_COLOR=1             no colours
+
+sudo usually drops environment variables; prefer the options, or run
+e.g. "sudo NO_COLOR=1 nginx-manager".
+EOF
+}
+
 main() {
+    local arg
+    for arg in "$@"; do
+        case "$arg" in
+            -h|--help) usage; exit 0 ;;
+            --plain) NM_UI=plain ;;
+            --non-interactive) NM_NONINTERACTIVE=1 ;;
+            *)
+                echo "nginx-manager: unknown option '$arg'" >&2
+                usage >&2
+                exit 2
+                ;;
+        esac
+    done
+    ui_init
+
     # Root check
     if [[ $EUID -ne 0 ]]; then
         echo -e "${RED}${BOLD}Run as root${NC}"
@@ -56,6 +92,9 @@ main() {
         echo -e "${YELLOW}Manager already running${NC}"
         exit 1
     }
+
+    # Ctrl-C now cancels the current prompt rather than killing the manager.
+    ui_trap_interrupts
 
     # Init
     create_default_config

@@ -685,14 +685,30 @@ plugin_secret_set() {
 # ==========================================================
 # PLUGINS MENU
 # ==========================================================
+# Status of one plugin for the list: "<badge-state>|<WORD>". Call
+# plugins_load and plugins_read_enabled first.
+plugin_status() {
+    if plugin_is_active "$1"; then
+        echo "on|ENABLED"
+    elif plugin_is_enabled "$1"; then
+        echo "err|BROKEN"
+    elif [[ -n "${PLUGIN_ERROR[$1]}" ]]; then
+        echo "err|INVALID"
+    else
+        echo "off|DISABLED"
+    fi
+}
+
 plugins_list() {
     plugins_load
     if ! plugins_read_enabled; then
         msg_error "Invalid $PLUGINS_ENABLED ($PLUGINS_ENABLED_ERROR): no plugin can run"
+        ui_hint "Sites cannot be created or changed until this is fixed. Correct that line, or"
+        ui_hint "remove the file to disable every plugin: rm $PLUGINS_ENABLED"
         echo
     fi
 
-    local id status_plain status_colored name
+    local id status name
     if ((${#PLUGIN_IDS[@]} == 0 && ${#PLUGINS_ON[@]} == 0 && ${#PLUGIN_BAD_DIRS[@]} == 0)); then
         echo "  No plugins installed in $PLUGIN_DIR"
         return
@@ -705,102 +721,224 @@ plugins_list() {
         [[ -n "${listed[$id]}" ]] && continue
         listed[$id]=1
 
-        if plugin_is_active "$id"; then
-            status_plain="● ENABLED" status_colored="${GREEN}● ENABLED${NC}"
-        elif plugin_is_enabled "$id"; then
-            status_plain="✗ BROKEN" status_colored="${RED}✗ BROKEN${NC}"
-        elif [[ -n "${PLUGIN_ERROR[$id]}" ]]; then
-            status_plain="✗ INVALID" status_colored="${RED}✗ INVALID${NC}"
-        else
-            status_plain="○ DISABLED" status_colored="${GRAY}○ DISABLED${NC}"
-        fi
-        name="${PLUGIN_NAME[$id]:-—}"
+        status=$(plugin_status "$id")
+        name="${PLUGIN_NAME[$id]:-$SYM_NONE}"
         printf "  %-20s " "$id"
-        pad_colored "$status_colored" "$status_plain" 11
-        printf " %-8s %s\n" "${PLUGIN_VERSION[$id]:-—}" "$(truncate_field "$name" 40)"
+        ui_badge_cell 11 "${status%%|*}" "${status#*|}"
+        printf " %-8s %s\n" "${PLUGIN_VERSION[$id]:-$SYM_NONE}" "$(truncate_field "$name" 40)"
 
         if ! plugin_found "$id"; then
-            echo -e "  ${YELLOW}    enabled, but not installed in $PLUGIN_DIR${NC}"
+            printf '%s\n' "  ${YELLOW}    enabled, but not installed in $PLUGIN_DIR - disable it${NC}"
         elif [[ -n "${PLUGIN_ERROR[$id]}" ]]; then
-            echo -e "  ${YELLOW}    ${PLUGIN_ERROR[$id]}${NC}"
+            printf '%s\n' "  ${YELLOW}    ${PLUGIN_ERROR[$id]}${NC}"
         elif plugin_is_enabled "$id" && ! plugin_is_active "$id"; then
-            echo -e "  ${YELLOW}    needs enabled: ${PLUGIN_DEPENDS[$id]}${NC}"
+            printf '%s\n' "  ${YELLOW}    needs enabled: ${PLUGIN_DEPENDS[$id]}${NC}"
         elif [[ -n "${PLUGIN_DESC[$id]}" ]]; then
-            echo -e "  ${GRAY}    ${PLUGIN_DESC[$id]}${NC}"
+            printf '%s\n' "  ${GRAY}    ${PLUGIN_DESC[$id]}${NC}"
         fi
     done
     for name in "${PLUGIN_BAD_DIRS[@]}"; do
-        echo -e "  ${YELLOW}! Ignored $(printf '%q' "$PLUGIN_DIR/$name"): not a valid plugin ID${NC}"
+        msg_warning "Ignored $(printf '%q' "$PLUGIN_DIR/$name"): not a valid plugin ID"
     done
+
+    local broken=0
+    for id in "${PLUGINS_ON[@]}"; do
+        plugin_is_active "$id" || ((broken++))
+    done
+    if ((broken)); then
+        echo
+        msg_warning "An enabled plugin cannot run, so sites cannot be created or changed."
+        ui_hint "Fix the plugin, or disable it with [D] (always allowed for a broken plugin)."
+    fi
 }
 
 plugins_menu() {
     while true; do
-        header
-        echo -e "${BOLD}PLUGINS${NC}"
-        echo "──────────────────────────────────────────────────────"
-        echo
+        ui_screen "Plugins"
         plugins_list
         echo
-        echo "──────────────────────────────────────────────────────"
+        ui_hint "Enabling or disabling changes no site until it is edited or regenerated."
         echo
-        echo "  [E] Enable    [D] Disable   [S] Set secret   [P] Site data"
-        echo "  [Q] Back"
-        echo
-
-        local choice id
-        read_input choice "Select action: " || return
-        choice="${choice,,}"
-        case "$choice" in
-            ""|q) return ;;
-            e)
-                read_input id "Plugin ID to enable: " || { input_closed; return; }
-                echo
-                plugin_enable "$id"
-                pause
-                ;;
-            d)
-                read_input id "Plugin ID to disable: " || { input_closed; return; }
-                echo
-                plugin_disable "$id"
-                pause
-                ;;
+        ui_menu "Actions" q \
+            "e|Enable|turn on an installed plugin (dependencies first)" \
+            "d|Disable|turn off a plugin, also a broken or missing one" \
+            "v|Details|manifest, hooks, dependencies, settings" \
+            "s|Set secret|store a value a plugin needs, e.g. an API token" \
+            "p|Site data|a plugin's settings for one site" \
+            "q|Back|" || return
+        case "$UI_REPLY" in
+            q) return ;;
+            e) plugin_enable_prompt ;;
+            d) plugin_disable_prompt ;;
+            v) plugin_details_prompt ;;
             s) plugin_secret_prompt ;;
             p) plugin_site_data_prompt ;;
-            *) msg_error "Invalid option"; pause ;;
         esac
     done
 }
 
-plugin_secret_prompt() {
-    local id name value
+# plugin_pick <title> <id>...  -- picks a plugin ID (UI_REPLY), showing each
+# with its name and status. Call plugins_load and plugins_read_enabled first.
+plugin_pick() {
+    local title="$1" id status labels=()
+    shift
+    for id in "$@"; do
+        status=$(plugin_status "$id")
+        labels+=("$(printf '%-20s %-9s %s' "$id" "${status#*|}" "${PLUGIN_NAME[$id]:-}")")
+    done
     echo
-    read_input id "Plugin ID: " || { input_closed; return; }
-    read_input name "Secret name: " || { input_closed; return; }
-    if ! read -rsp "Value (not shown): " value && [[ -z "$value" ]]; then
-        input_closed
+    UI_PICK_LABELS=("${labels[@]}")
+    ui_pick "$title" "$@"
+}
+
+plugin_enable_prompt() {
+    plugins_load
+    plugins_read_enabled
+    local id candidates=()
+    for id in "${PLUGIN_IDS[@]}"; do
+        plugin_is_enabled "$id" || candidates+=("$id")
+    done
+    if ((${#candidates[@]} == 0)); then
+        echo
+        msg_warning "No installed plugin is disabled"
+        pause
         return
     fi
+    plugin_pick "Plugin to enable" "${candidates[@]}" || return
     echo
+    ui_run plugin_enable "$UI_REPLY"
+    pause
+}
+
+plugin_disable_prompt() {
+    plugins_load
+    if ! plugins_read_enabled; then
+        echo
+        msg_error "Invalid $PLUGINS_ENABLED ($PLUGINS_ENABLED_ERROR); fix or remove it first"
+        pause
+        return
+    fi
+    if ((${#PLUGINS_ON[@]} == 0)); then
+        echo
+        msg_warning "No plugin is enabled"
+        pause
+        return
+    fi
+    plugin_pick "Plugin to disable" "${PLUGINS_ON[@]}" || return
+    echo
+    ui_run plugin_disable "$UI_REPLY"
+    pause
+}
+
+plugin_details_prompt() {
+    plugins_load
+    plugins_read_enabled
+    local ids=("${PLUGIN_IDS[@]}") id
+    for id in "${PLUGINS_ON[@]}"; do
+        plugin_found "$id" || ids+=("$id")
+    done
+    if ((${#ids[@]} == 0)); then
+        echo
+        msg_warning "No plugins installed in $PLUGIN_DIR"
+        pause
+        return
+    fi
+    plugin_pick "Plugin" "${ids[@]}" || return
+    plugin_details "$UI_REPLY"
+}
+
+# Shows what the core knows about a plugin. Setting and secret values are
+# never shown, only whether they exist.
+plugin_details() {
+    local id="$1" status
+    plugins_load
+    plugins_read_enabled
+    ui_screen "Plugins" "$id"
+    status=$(plugin_status "$id")
+    ui_kv "Status" "$(ui_badge "${status%%|*}" "${status#*|}")"
+    if ! plugin_found "$id"; then
+        ui_kv "Installed" "$(ui_badge err "No: not in $PLUGIN_DIR")"
+        ui_hint "Disable it, or put the plugin back in $PLUGIN_DIR/$id."
+        pause
+        return
+    fi
+    ui_kv "Name" "${PLUGIN_NAME[$id]:-$SYM_NONE}"
+    ui_kv "Version" "${PLUGIN_VERSION[$id]:-$SYM_NONE}"
+    [[ -n "${PLUGIN_DESC[$id]}" ]] && ui_kv "Description" "${PLUGIN_DESC[$id]}"
+    ui_kv "Depends on" "${PLUGIN_DEPENDS[$id]:-$SYM_NONE}"
+    ui_kv "Hooks" "${PLUGIN_HOOKS[$id]:-$SYM_NONE}"
+    ui_kv "Directory" "$PLUGIN_DIR/$id"
+    [[ -n "${PLUGIN_ERROR[$id]}" ]] && ui_kv "Problem" "$(ui_badge err "${PLUGIN_ERROR[$id]}")"
+
+    ui_section "Settings and secrets"
+    if [[ -f "$PLUGIN_CONF_DIR/$id.conf" ]]; then
+        ui_kv "Settings" "$PLUGIN_CONF_DIR/$id.conf"
+    else
+        ui_kv "Settings" "$(ui_badge none "none ($PLUGIN_CONF_DIR/$id.conf)")"
+    fi
+    local secrets=()
+    [[ -d "$PLUGIN_SECRETS_DIR/$id" && ! -L "$PLUGIN_SECRETS_DIR/$id" ]] \
+        && mapfile -t secrets < <(find "$PLUGIN_SECRETS_DIR/$id" -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)
+    if ((${#secrets[@]})); then
+        ui_kv "Secrets" "${secrets[*]}"
+    else
+        ui_kv "Secrets" "$(ui_badge none "none")"
+    fi
+    ui_hint "docs/PLUGINS.md describes how a plugin reads its settings and secrets."
+    pause
+}
+
+plugin_secret_prompt() {
+    plugins_load
+    plugins_read_enabled
+    if ((${#PLUGIN_IDS[@]} == 0)); then
+        echo
+        msg_warning "No plugins installed in $PLUGIN_DIR"
+        pause
+        return
+    fi
+    plugin_pick "Plugin" "${PLUGIN_IDS[@]}" || return
+    local id="$UI_REPLY" name value
+    ui_input "Secret name" "" "letters, numbers, . _ -" || { ui_aborted $?; return; }
+    name="$UI_REPLY"
+    ui_input "Value (not shown)" "" "" secret || { ui_aborted $?; return; }
+    value="$UI_REPLY"
     echo
     # printf is a builtin: the value never appears in a process list.
-    printf '%s' "$value" | plugin_secret_set "$id" "$name"
+    printf '%s' "$value" | ui_run plugin_secret_set "$id" "$name"
     pause
 }
 
 plugin_site_data_prompt() {
     local site id data
-    site=$(select_site "Select site") || return
-    read_input id "Plugin ID: " || { input_closed; return; }
+    select_site "Select site" || return
+    site="$UI_REPLY"
+    # Installed plugins, plus any whose data the site still has (so the data
+    # of a removed plugin can be cleared with {}).
+    plugins_load
+    plugins_read_enabled
+    local ids=("${PLUGIN_IDS[@]}")
+    while IFS= read -r id; do
+        plugin_found "$id" || ids+=("$id")
+    done < <(jq -r --arg n "$site" '.[$n].plugins // {} | keys[]' "$SITES_DB" 2>/dev/null)
+    if ((${#ids[@]} == 0)); then
+        echo
+        msg_warning "No plugins installed in $PLUGIN_DIR"
+        pause
+        return
+    fi
+    plugin_pick "Plugin" "${ids[@]}" || return
+    id="$UI_REPLY"
     if ! validate_plugin_id "$id"; then
         msg_error "Invalid plugin ID: '$id'"
         pause
         return
     fi
     echo "Current data: $(plugin_site_get "$site" "$id")"
-    read_input data "New data (one JSON object, {} removes it): " || { input_closed; return; }
+    ui_input "New data" "" "one JSON object; {} removes it" || { ui_aborted $?; return; }
+    data="$UI_REPLY"
     echo
-    if plugin_site_set "$site" "$id" "$data"; then
+    if ui_run plugin_site_set "$site" "$id" "$data"; then
         msg_success "Plugin data saved for '$site'"
         echo "Edit or regenerate the site to apply it to its nginx configuration."
     fi

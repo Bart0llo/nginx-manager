@@ -61,7 +61,7 @@ check_core_dependencies() {
 
 require_certbot() {
     if ! command -v certbot >/dev/null 2>&1; then
-        echo -e "${RED}Certbot is not installed. Run TLS Manager -> Install TLS dependencies.${NC}"
+        echo -e "${RED}Certbot is not installed. Install it from TLS & certificates -> Install TLS packages.${NC}"
         return 1
     fi
     return 0
@@ -69,7 +69,7 @@ require_certbot() {
 
 require_openssl() {
     if ! command -v openssl >/dev/null 2>&1; then
-        echo -e "${RED}OpenSSL is not installed. Run TLS Manager -> Install TLS dependencies.${NC}"
+        echo -e "${RED}OpenSSL is not installed. Install it from TLS & certificates -> Install TLS packages.${NC}"
         return 1
     fi
     return 0

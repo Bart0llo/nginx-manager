@@ -398,7 +398,7 @@ t_site_import_db_failure() {
 t_cli_add_calls_site_create() {
     fixture_configured; load_app; rm -f "$SPY_LOG"
     spy site_create; spy enable_site
-    add_site <<< $'app\napp.lan.example.com\n127.0.0.1:8080\n2\ny\n\n' >/dev/null 2>&1
+    add_site <<< $'app\napp.lan.example.com\n127.0.0.1:8080\n2\ny\ny\n\n' >/dev/null 2>&1
     assert_eq "site_create app app.lan.example.com 127.0.0.1:8080 https
 enable_site app" "$(cat "$SPY_LOG")" "add -> site_create, then enable_site after confirm"
     golden_compare https.conf "$SITES_AVAILABLE/app.conf"
@@ -408,7 +408,7 @@ t_cli_edit_calls_site_update() {
     fixture_configured; load_app; rm -f "$SPY_LOG"
     new_site app https
     spy site_update
-    edit_site app <<< $'\n127.0.0.1:9090\n3\n\n' >/dev/null 2>&1
+    edit_site app <<< $'\n127.0.0.1:9090\n3\ny\n\n' >/dev/null 2>&1
     assert_eq "site_update app app.lan.example.com 127.0.0.1:9090 both" "$(cat "$SPY_LOG")" \
         "edit -> site_update with prompted values and defaults"
 }
@@ -458,13 +458,13 @@ t_dotted_import_enable_disable() {
     fixture_configured; import_dotted
     assert_db 'has("example.com")' "imported as example.com"
     local out
-    out=$(run_app '1\nt\n1\n\n\nq\nq\n')
+    out=$(run_app '2\n1\nt\n\n\nq\nq\nq\n')
     assert_contains "$out" "Enable site 'example.com'? [Y/n]" "toggle offers enable"
     assert_not_contains "$out" "Invalid site name" "name accepted"
     assert_symlink "$SITES_ENABLED/$DOTTED.conf" "enabled from the menu"
     assert_db '.["example.com"].enabled == true' "db enabled"
     assert_called "systemctl reload nginx" "reloaded"
-    out=$(run_app '1\nt\n1\n\n\nq\nq\n')
+    out=$(run_app '2\n1\nt\n\n\nq\nq\nq\n')
     assert_contains "$out" "Disable site 'example.com'? [Y/n]" "toggle offers disable"
     assert_no_symlink "$SITES_ENABLED/$DOTTED.conf" "disabled from the menu"
     assert_db '.["example.com"].enabled == false' "db disabled"
@@ -477,7 +477,7 @@ t_dotted_import_enable_disable() {
 t_dotted_import_edit() {
     fixture_configured; import_dotted
     local out
-    out=$(run_app '1\ne\n1\n\n127.0.0.1:9090\n1\n\nq\nq\n')
+    out=$(run_app '2\n1\ne\n\n127.0.0.1:9090\n1\ny\n\nq\nq\nq\n')
     assert_contains "$out" "Site updated (disabled, not reloaded)" "edited from the menu"
     assert_not_contains "$out" "Invalid site name" "name accepted"
     assert_db '.["example.com"] | .backend == "127.0.0.1:9090" and .enabled == false' "db updated"
@@ -492,7 +492,7 @@ t_dotted_import_edit() {
 t_dotted_import_delete() {
     fixture_configured; import_dotted
     local out
-    out=$(run_app '1\nd\n1\nexample.com\n\nq\nq\n')
+    out=$(run_app '2\n1\nd\nexample.com\n\nq\nq\n')
     assert_contains "$out" "Site 'example.com' deleted" "deleted from the menu"
     assert_no_file "$SITES_AVAILABLE/$DOTTED.conf" "config removed"
     assert_db 'has("example.com") | not' "db entry removed"
@@ -542,7 +542,7 @@ t_site_create_keeps_strict_names() {
     done
     assert_eq '{}' "$(db_snapshot)" "db unchanged"
     assert_eq "" "$(ls "$SITES_AVAILABLE" | grep '\.conf$')" "no config written"
-    out=$(run_app '1\na\nexample.com\napp\napp.lan.example.com\n127.0.0.1:8080\n1\nn\n\nq\nq\n')
+    out=$(run_app '3\nexample.com\napp\napp.lan.example.com\n127.0.0.1:8080\n1\ny\nn\n\nq\n')
     assert_contains "$out" "Invalid name (letters, numbers, - and _ only)" "add prompt rejects dotted name"
     assert_db '(has("example.com") | not) and has("app")' "only the valid name was created"
 }

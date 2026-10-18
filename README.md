@@ -33,6 +33,24 @@ The installer places the application in:
 /usr/local/bin/nginx-manager
 ```
 
+## Interface
+
+The manager works in any terminal with its built-in text menus. If
+[gum](https://github.com/charmbracelet/gum#installation) 0.15 or newer is
+installed, it is used automatically for arrow-key menus, searchable lists
+and confirmation dialogs. Nothing else changes, and the manager never
+installs gum itself.
+
+```bash
+sudo nginx-manager --plain            # built-in menus even if gum is installed
+sudo nginx-manager --non-interactive  # never wait for input; exit 1 where an answer is needed
+sudo NO_COLOR=1 nginx-manager         # no colours
+```
+
+Gum is only used when stdin, stdout and stderr are a terminal. Piped input
+is read line by line by the built-in menus. Colours are only used on a
+terminal.
+
 ## Requirements
 
 Supported:
@@ -50,8 +68,8 @@ openssl
 ```
 
 Certbot is only needed for HTTPS certificates and is not installed by
-default. Install it later from TLS Manager -> Install TLS dependencies, or
-during installation:
+default. Install it later from TLS & certificates -> Install TLS packages,
+or during installation:
 
 ```bash
 curl -fsSL https://gist.githubusercontent.com/Bart0llo/e746ec66324473d20a72f13588f9d3b3/raw/install.sh | sudo bash -s -- --with-certbot

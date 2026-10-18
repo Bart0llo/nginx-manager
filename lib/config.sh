@@ -95,23 +95,26 @@ first_run_setup() {
         return
     fi
 
-    header
-    echo -e "${BOLD}FIRST RUN SETUP${NC}"
-    echo "──────────────────────────────────────────────────────"
+    ui_screen "First-run setup"
+    echo "Two questions before the first start. They are saved in $CONFIG_FILE."
+    ui_hint "The base domain names the wildcard certificate (*.domain) HTTPS sites use."
+    ui_cancel_hint
     echo
 
     local domain
     while true; do
-        read_input domain "Base domain (example: lan.example.com): " || { input_closed "setup not completed"; return 1; }
+        ui_input "Base domain" "" "e.g. lan.example.com" || { ui_aborted $? "setup not completed"; return 1; }
+        domain="$UI_REPLY"
         validate_domain "$domain" && break
-        msg_error "Invalid domain"
+        msg_error "Invalid domain - expected a name like lan.example.com"
     done
 
     local email
     while true; do
-        read_input email "Certbot email: " || { input_closed "setup not completed"; return 1; }
+        ui_input "Certbot email" "" "Let's Encrypt sends expiry notices here" || { ui_aborted $? "setup not completed"; return 1; }
+        email="$UI_REPLY"
         validate_email "$email" && break
-        msg_error "Invalid email"
+        msg_error "Invalid email - expected name@example.com"
     done
 
     local tmp

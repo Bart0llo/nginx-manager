@@ -139,6 +139,16 @@ use_mock() {
 
 remove_mock() { rm -f "$MOCK_BIN/$1"; }
 
+# Installs the gum mock (tests/mocks/gum) with the given answers, one
+# "<rc> <output>" line per gum call. See the mock for the format.
+use_gum() { # answer...
+    use_mock gum
+    printf '%s\n' "$@" > /tmp/gum-script
+    : > /tmp/gum-calls.log
+}
+
+gum_calls() { cat /tmp/gum-calls.log 2>/dev/null; }
+
 mock_rc() { echo "$2" > "$MOCK_RC/$1"; }
 
 # ==========================================================
@@ -159,7 +169,8 @@ reset_state() {
         "$MOCK_RC" "$MOCK_LOG" /tmp/pwned* /tmp/nginx-manager.sh \
         /etc/victim.conf /usr/local/bin/nginx-manager /tmp/bounded.out \
         /etc/letsencrypt/live/soon.example.com \
-        /tmp/nm-plugins* /tmp/plugin-calls.log /usr/local/lib/nginx-manager
+        /tmp/nm-plugins* /tmp/plugin-calls.log /usr/local/lib/nginx-manager \
+        /tmp/gum-script /tmp/gum-calls.log /tmp/gum-version /tmp/gum-version-rc
     rm -f "$SITES_AVAILABLE"/*.conf "$SITES_ENABLED"/*.conf \
         /etc/nginx/snippets/proxy-common.conf /etc/nginx/snippets/tls-common.conf
     [[ -e /usr/bin/jq.off ]] && mv /usr/bin/jq.off /usr/bin/jq

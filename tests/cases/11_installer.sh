@@ -69,7 +69,7 @@ t_installed_app_runs() {
     local out rc
     out=$(printf 'q\n' | timeout 20 "$TARGET" 2>&1); rc=$?
     assert_eq 0 "$rc" "installed nginx-manager starts and quits"
-    assert_contains "$out" "NGINX MANAGER PRO" "shows the dashboard"
+    assert_contains "$out" "NGINX Manager Pro" "shows the dashboard"
 }
 
 t_update_preserves_data() {

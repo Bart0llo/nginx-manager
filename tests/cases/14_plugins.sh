@@ -808,8 +808,8 @@ t_plugins_menu() {
 
     plugins_menu </dev/null >/dev/null 2>&1; pass "closed input leaves the menu"
 
-    out=$(run_app '6\nq\nq\n')
-    assert_contains "$out" "[6] Plugins" "main menu entry"
+    out=$(run_app '5\nq\nq\n')
+    assert_contains "$out" "[5] Plugins" "main menu entry"
     assert_contains "$out" "[E] Enable" "plugins menu opens"
 }
 

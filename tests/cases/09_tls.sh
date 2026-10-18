@@ -103,7 +103,7 @@ t_create_certificate_preconditions() {
 
     fixture_cloudflare; remove_mock certbot
     out=$(create_certificate <<< $'\n' 2>&1)
-    assert_contains "$out" "Certbot is not installed. Run TLS Manager -> Install TLS dependencies." "requires certbot"
+    assert_contains "$out" "Certbot is not installed. Install it from TLS & certificates -> Install TLS packages." "requires certbot"
 
     install_mocks
     sed -i 's/^DOMAIN=.*/DOMAIN=/' "$MANAGER_DIR/config.conf"
@@ -159,13 +159,17 @@ t_tls_menu_status() {
     fixture_configured; load_app
     local out
     out=$(tls_menu <<< $'q\n' 2>&1)
-    assert_contains "$out" "Name         lan.example.com" "cert name"
-    assert_contains "$out" "Status       ✓ Valid" "valid cert"
+    assert_matches "$out" '^  Name +lan\.example\.com$' "cert name"
+    assert_matches "$out" '^  Status +✓ Valid \([0-9]+ days left\)$' "valid cert"
+    assert_matches "$out" '^  Covers +\*\.lan\.example\.com, lan\.example\.com$' "names covered"
+    assert_matches "$out" '^  Expires +[0-9]{4}-[0-9]{2}-[0-9]{2}$' "expiry date"
     assert_contains "$out" "Days left" "days left shown"
-    assert_contains "$out" "Credentials  ✗ Not configured" "no credentials"
+    assert_matches "$out" '^  Credentials +✗ Not configured$' "no credentials"
+    assert_contains "$out" "read-only: subject, names and dates" "inspecting is marked read-only"
+    assert_contains "$out" "(changes certificates)" "modifying actions are marked"
     fixture_cloudflare
     out=$(tls_menu <<< $'q\n' 2>&1)
-    assert_contains "$out" "Credentials  ✓ Configured" "credentials configured"
+    assert_matches "$out" '^  Credentials +✓ Configured$' "credentials configured"
 }
 
 t_tls_status_expiring_and_missing() {
@@ -173,9 +177,36 @@ t_tls_status_expiring_and_missing() {
     create_cert soon.example.com 5
     sed -i 's/lan\.example\.com/soon.example.com/' "$MANAGER_DIR/config.conf"
     load_app
-    assert_contains "$(tls_menu <<< $'q\n' 2>&1)" "Status       ! Expires soon" "tls menu: < 14 days"
-    assert_contains "$(render_dashboard_status 2>&1)" "Certificate    ! Expires in " "dashboard: < 14 days"
+    assert_matches "$(tls_menu <<< $'q\n' 2>&1)" '^  Status +! Expires soon \([0-9] days left\)$' "tls menu: < 14 days"
+    local out
+    out=$(render_dashboard_status 2>&1)
+    assert_matches "$out" '^  Certificate +! Expires soon' "dashboard: < 14 days"
+    assert_contains "$out" "The certificate expires in" "dashboard warning"
     sed -i 's/^CERT_NAME=.*/CERT_NAME=missing.example.com/' "$MANAGER_DIR/config.conf"
-    assert_contains "$(tls_menu <<< $'q\n' 2>&1)" "Status       ○ Not issued" "tls menu: not issued"
-    assert_contains "$(render_dashboard_status 2>&1)" "Certificate    ○ Not issued" "dashboard: not issued"
+    assert_matches "$(tls_menu <<< $'q\n' 2>&1)" '^  Status +! Not issued$' "tls menu: not issued"
+    assert_matches "$(render_dashboard_status 2>&1)" '^  Certificate +! Not issued$' "dashboard: not issued"
+}
+
+t_renew_failure_reported() {
+    fixture_configured; load_app
+    mock_rc certbot-renew 1
+    local out rc
+    out=$(renew_certificate <<< $'\n\n' 2>&1); rc=$?
+    assert_eq 1 "$rc" "nonzero return"
+    assert_contains "$out" "certbot renew failed (exit 1)" "failure reported"
+    assert_not_contains "$out" "certbot renew finished" "no success claimed"
+}
+
+t_certificate_actions_can_be_declined() {
+    fixture_configured; fixture_cloudflare; load_app
+    local out
+    out=$(create_certificate <<< $'n\n\n' 2>&1)
+    assert_contains "$out" "Request the certificate now? [Y/n]" "issuing asks first"
+    assert_contains "$out" "Cancelled - nothing was changed" "decline reported"
+    out=$(renew_certificate <<< $'n\n\n' 2>&1)
+    assert_contains "$out" "Cancelled - nothing was changed" "renew declined"
+    out=$(install_tls <<< $'n\n\n' 2>&1)
+    assert_contains "$out" "Cancelled - nothing was installed" "install declined"
+    assert_not_called "certbot" "certbot not run"
+    assert_not_called "apt" "apt not run"
 }

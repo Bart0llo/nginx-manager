@@ -1,0 +1,39 @@
+#!/bin/bash
+# Gum mock. Records every call in /tmp/gum-calls.log (one line per call,
+# arguments separated by " | ") and answers from a script instead of a
+# terminal:
+#   gum --version      prints /tmp/gum-version (default "gum version v0.16.2")
+#                      and exits with /tmp/gum-version-rc (default 0)
+#   any other command  takes the next line of /tmp/gum-script, "<rc> <output>":
+#                      prints <output> and exits <rc>. An output of "#N" prints
+#                      the N-th option given after "--". With no line left it
+#                      exits 130, as if Ctrl-C was pressed.
+# "gum pager" also reads (and discards) its stdin.
+log=/tmp/gum-calls.log
+script=/tmp/gum-script
+
+if [[ "$1" == --version ]]; then
+    echo "gum --version" >> "$log"
+    cat /tmp/gum-version 2>/dev/null || echo "gum version v0.16.2"
+    exit "$(cat /tmp/gum-version-rc 2>/dev/null || echo 0)"
+fi
+
+( IFS='|'; echo "gum $*" ) | sed 's/|/ | /g' >> "$log"
+[[ "$1" == pager ]] && cat > /dev/null
+
+line=$(head -1 "$script" 2>/dev/null)
+[[ -n "$line" ]] || exit 130
+sed -i 1d "$script"
+rc="${line%% *}" out=""
+[[ "$line" == *" "* ]] && out="${line#* }"
+
+if [[ "$out" =~ ^#([0-9]+)$ ]]; then
+    n="${BASH_REMATCH[1]}" options=() seen=0
+    for a in "$@"; do
+        ((seen)) && options+=("$a")
+        [[ "$a" == -- ]] && seen=1
+    done
+    out="${options[n - 1]}"
+fi
+[[ -n "$out" ]] && printf '%s\n' "$out"
+exit "$rc"

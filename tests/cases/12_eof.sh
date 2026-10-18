@@ -29,14 +29,15 @@ t_eof_in_first_run_setup() {
 t_eof_in_main_menu() {
     fixture_configured
     assert_stops_at_eof '' "main menu"
-    assert_count "$(cat /tmp/bounded.out)" "NGINX MANAGER PRO" 1 "menu drawn once"
+    assert_count "$(cat /tmp/bounded.out)" "NGINX Manager Pro" 1 "menu drawn once"
 }
 
 t_eof_in_add_site() {
     fixture_configured
     local input
-    for input in '1\na\n' '1\na\napp\n' '1\na\napp\napp.lan.example.com\n' \
-            '1\na\napp\napp.lan.example.com\n127.0.0.1:8080\n'; do
+    for input in '3\n' '3\napp\n' '3\napp\napp.lan.example.com\n' \
+            '3\napp\napp.lan.example.com\n127.0.0.1:8080\n' \
+            '3\napp\napp.lan.example.com\n127.0.0.1:8080\n1\n'; do
         assert_stops_at_eof "$input" "add site after '$input'"
         assert_eq "{}" "$(cat "$MANAGER_DIR/sites.json")" "no site written after '$input'"
         assert_no_file "$SITES_AVAILABLE/app.conf" "no config written after '$input'"
@@ -46,7 +47,7 @@ t_eof_in_add_site() {
 # End of input at a yes/no question is "no", whatever the default.
 t_eof_at_confirm_means_no() {
     fixture_configured
-    assert_stops_at_eof '1\na\napp\napp.lan.example.com\n127.0.0.1:8080\n1\n' "at 'Enable site now? [Y/n]'"
+    assert_stops_at_eof '3\napp\napp.lan.example.com\n127.0.0.1:8080\n1\ny\n' "at 'Enable site now? [Y/n]'"
     assert_contains "$(cat /tmp/bounded.out)" "Site created (disabled)" "created, not enabled"
     assert_no_symlink "$SITES_ENABLED/app.conf" "not enabled"
     assert_not_called "systemctl reload" "no reload"
@@ -58,23 +59,31 @@ t_eof_in_edit_site() {
     local before original input
     before=$(cat "$MANAGER_DIR/sites.json")
     original=$(cat "$SITES_AVAILABLE/app.conf")
-    for input in '1\ne\n1\n' '1\ne\n1\n\n' '1\ne\n1\n\n\n'; do
+    for input in '2\n1\ne\n' '2\n1\ne\n\n' '2\n1\ne\n\n\n' '2\n1\ne\n\n127.0.0.1:9090\n\n'; do
         assert_stops_at_eof "$input" "edit after '$input'"
         assert_eq "$before" "$(cat "$MANAGER_DIR/sites.json")" "db unchanged after '$input'"
         assert_eq "$original" "$(cat "$SITES_AVAILABLE/app.conf")" "config unchanged after '$input'"
     done
 }
 
+t_eof_at_delete_confirmation() {
+    fixture_configured
+    seed "new_site app http; enable_site app"
+    assert_stops_at_eof '2\n1\nd\n' "at the delete confirmation"
+    assert_db 'has("app")' "site kept"
+    assert_symlink "$SITES_ENABLED/app.conf" "still enabled"
+}
+
 t_eof_in_cloudflare_token() {
     fixture_configured
-    assert_stops_at_eof '2\n4\n' "at token prompt"
+    assert_stops_at_eof '4\n4\n' "at token prompt"
     assert_no_file "$MANAGER_DIR/secrets/cloudflare.ini" "no credentials written"
 }
 
 # The lock is held by the process, so stopping at end of input frees it.
 t_eof_exit_releases_lock() {
     fixture_configured
-    assert_stops_at_eof '1\n' "sites menu"
+    assert_stops_at_eof '2\n' "sites menu"
     local out rc
     out=$(run_app 'q\n'); rc=$?
     assert_eq 0 "$rc" "next start works"

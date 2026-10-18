@@ -100,7 +100,7 @@ reason, and cannot be enabled.
 
 ## Enabling and disabling
 
-Main menu -> **[6] Plugins** lists every plugin with its status:
+Main menu -> **[5] Plugins** lists every plugin with its status:
 
 | Status       | Meaning                                                      |
 |--------------|--------------------------------------------------------------|
@@ -109,8 +109,10 @@ Main menu -> **[6] Plugins** lists every plugin with its status:
 | `✗ INVALID`  | cannot be used; the reason is shown below it                 |
 | `✗ BROKEN`   | enabled, but cannot run; the reason is shown below it        |
 
-Use **[E] Enable** / **[D] Disable** and type the plugin ID. The functions
-behind them are `plugin_enable <id>` and `plugin_disable <id>`.
+Use **[E] Enable** / **[D] Disable** and pick the plugin from the list
+(**[V] Details** shows its manifest, hooks, dependencies and which settings
+and secrets exist, never their values). The functions behind them are
+`plugin_enable <id>` and `plugin_disable <id>`.
 
 The enabled list is `/etc/nginx-manager/plugins.enabled`, one ID per line
 (`#` comments and blank lines are allowed). It is rewritten through a
@@ -121,7 +123,8 @@ A line that is not a valid ID makes the whole file invalid: no hook runs
 Enabling or disabling a plugin runs no plugin code and **does not change any
 nginx configuration**. A plugin's directives are added to, or removed from,
 a site's configuration the next time that site is created, edited or
-regenerated (**Sites -> [R] Regenerate** or **[G] Regen all**).
+regenerated (open the site under **Sites** and choose **Regenerate**, or
+**Sites -> [G] Regenerate all**).
 
 A plugin that is no longer installed or no longer valid can still be
 disabled.
@@ -359,7 +362,7 @@ To try it from a checkout:
 
 1. **Plugins -> [E] Enable**, `example`.
 2. **Plugins -> [P] Site data**, pick a site, enter `{"header": true}`.
-3. **Sites -> [R] Regenerate** that site, then **[V] View -> [C] View
+3. **Sites**, open that site, **[R] Regenerate**, then **[C] View
    config**: the header is in `location /`.
 4. Disable the plugin (or set the data to `{}`) and regenerate: the
    configuration is back to the plain template.

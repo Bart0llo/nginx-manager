@@ -35,11 +35,11 @@ t_configured_start_shows_dashboard() {
     local out rc
     out=$(run_app 'q\n'); rc=$?
     assert_eq 0 "$rc" "app exits 0"
-    assert_not_contains "$out" "FIRST RUN SETUP" "setup skipped when SETUP_DONE=true"
-    assert_contains "$out" "Nginx          ✓ Running" "dashboard: nginx running"
-    assert_contains "$out" "Configuration  ✓ Valid" "dashboard: config valid"
-    assert_contains "$out" "Sites          0 enabled / 0 total" "dashboard: site count"
-    assert_contains "$out" "Certificate    ✓ Valid (" "dashboard: certificate valid"
+    assert_not_contains "$out" "First-run setup" "setup skipped when SETUP_DONE=true"
+    assert_matches "$out" '^  NGINX service +✓ Running$' "dashboard: nginx running"
+    assert_matches "$out" '^  NGINX config +✓ Valid$' "dashboard: config valid"
+    assert_matches "$out" '^  Sites +— No sites yet$' "dashboard: site count"
+    assert_matches "$out" '^  Certificate +✓ Valid \([0-9]+ days left\)$' "dashboard: certificate valid"
 }
 
 t_lock_prevents_second_instance() {
@@ -90,7 +90,7 @@ t_runs_through_symlink() {
     local out rc
     out=$(printf 'q\n' | timeout 20 /usr/local/bin/nginx-manager 2>&1); rc=$?
     assert_eq 0 "$rc" "starts via symlink and quits"
-    assert_contains "$out" "NGINX MANAGER PRO" "shows the dashboard"
+    assert_contains "$out" "NGINX Manager Pro" "shows the dashboard"
 }
 
 t_missing_modules_reported() {
@@ -191,7 +191,7 @@ t_first_run_rejects_shell_in_email() {
     assert_contains "$out" "Invalid email" "email with \$(...) rejected"
     assert_contains "$out" "Initial setup completed" "setup completes with a valid email"
     assert_contains "$(cat "$MANAGER_DIR/config.conf")" "CERTBOT_EMAIL=admin@example.com" "valid email stored"
-    run_app '2\nq\nq\n' >/dev/null
+    run_app '4\nq\nq\n' >/dev/null
     assert_no_file /tmp/pwned "nothing executed"
 }
 
@@ -212,7 +212,7 @@ t_config_is_not_executed() {
     done
     fixture_configured; echo 'CERTBOT_EMAIL=x$(touch /tmp/pwned9)@example.com' >> "$MANAGER_DIR/config.conf"
     run_app 'q\n' >/dev/null
-    out=$(run_app '2\n2\n\nq\nq\n')
+    out=$(run_app '4\n2\n\nq\nq\n')
     assert_eq "" "$(ls /tmp | grep '^pwned')" "no command ran (load_config, dashboard, TLS manager)"
     assert_not_called "certbot certonly" "certbot not run with a rejected config"
 }
