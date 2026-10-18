@@ -4,6 +4,7 @@
 #
 #   tests/run.sh                 run every case
 #   tests/run.sh 05 07           run cases whose file name starts with 05 / 07
+#   NM_TEST_BUNDLE=1 tests/run.sh  run every case against the tools/bundle.sh output
 #
 # Each case file runs in its own disposable debian:stable container with
 # networking disabled and the repository mounted read-only, so the host's
@@ -48,7 +49,7 @@ fi
 failed=0
 for c in "${cases[@]}"; do
     [[ -f "$c" ]] || { echo "no such case: $c"; failed=1; continue; }
-    docker run --rm --network none \
+    docker run --rm --network none -e NM_TEST_BUNDLE \
         -v "$src:/src:ro" -v "$out:/out" \
         "$IMAGE" bash /src/tests/lib/runner.sh "/src/$c" || failed=1
 done

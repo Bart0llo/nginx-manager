@@ -7,6 +7,12 @@ case_name=$(basename "$case_file" .sh)
 HARNESS=/src/tests/lib/harness.sh
 log_dir="/out/logs/$case_name"
 
+# NM_TEST_BUNDLE=1: run every case against the single-file bundle.
+if [[ "${NM_TEST_BUNDLE:-}" == 1 ]]; then
+    bash /src/tools/bundle.sh /tmp/nm-bundle.sh >/dev/null || exit 1
+    export NM_TEST_APP=/tmp/nm-bundle.sh
+fi
+
 source "$HARNESS"
 : > "$RESULTS"
 mkdir -p "$log_dir"

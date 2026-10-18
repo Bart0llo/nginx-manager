@@ -72,6 +72,40 @@ t_starts_without_certbot() {
     assert_eq 0 "$rc" "starts without certbot (HTTP-only use stays possible)"
 }
 
+t_source_with_no_main_has_no_side_effects() {
+    local out
+    out=$(NM_NO_MAIN=1 bash -c 'source "$1" && declare -F main_menu first_run_setup >/dev/null && echo loaded' \
+        _ "$APP" </dev/null 2>&1)
+    assert_eq loaded "$out" "functions defined, nothing printed"
+    assert_no_file "$MANAGER_DIR" "no manager directory created"
+    assert_no_file /var/log/nginx-manager "no log directory created"
+    assert_no_file /run/lock/nginx-manager.lock "no lock file"
+    assert_no_file /etc/nginx/snippets/proxy-common.conf "no snippets written"
+    assert_eq "" "$(cat "$MOCK_LOG")" "no external commands run"
+}
+
+t_runs_through_symlink() {
+    fixture_configured
+    ln -s "$APP" /usr/local/bin/nginx-manager
+    local out rc
+    out=$(printf 'q\n' | timeout 20 /usr/local/bin/nginx-manager 2>&1); rc=$?
+    assert_eq 0 "$rc" "starts via symlink and quits"
+    assert_contains "$out" "NGINX MANAGER PRO" "shows the dashboard"
+}
+
+t_missing_modules_reported() {
+    if ! grep -q 'NM_LIB_DIR' "$APP"; then
+        pass "single-file bundle has no module directory"
+        return
+    fi
+    cp "$APP" /tmp/nm-lonely.sh
+    local out rc
+    out=$(bash /tmp/nm-lonely.sh </dev/null 2>&1); rc=$?
+    rm -f /tmp/nm-lonely.sh
+    assert_eq 1 "$rc" "exits 1 without lib/"
+    assert_contains "$out" "modules not found in /tmp/lib" "names the missing directory"
+}
+
 t_snippets_overwritten_on_start() {
     known_defect "D4: snippets overwritten on every start, no backup"
     fixture_configured

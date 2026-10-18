@@ -1,21 +1,24 @@
 #!/bin/bash
 # install.sh in isolation: apt-get and curl are mocked, the "download" is a
 # local file chosen via MOCK_CURL_FILE. No network is used.
+# The served file is the tools/bundle.sh output, as hosted on the gist.
 
 INSTALLER=/src/install.sh
 TARGET=/usr/local/bin/nginx-manager
+BUNDLE=/tmp/nm-install-bundle.sh
 
 run_installer() { # file-to-serve
+    build_bundle "$BUNDLE"
     use_mock curl
     MOCK_CURL_FILE="$1" timeout 30 bash "$INSTALLER" 2>&1
 }
 
 t_fresh_install() {
     local out rc
-    out=$(run_installer /src/nginx-site.sh); rc=$?
+    out=$(run_installer "$BUNDLE"); rc=$?
     assert_eq 0 "$rc" "installer exits 0"
     assert_contains "$out" "Installation completed successfully" "success message"
-    assert_eq "$(sha256sum < /src/nginx-site.sh)" "$(sha256sum < "$TARGET")" "installed file identical to source"
+    assert_eq "$(sha256sum < "$BUNDLE")" "$(sha256sum < "$TARGET")" "installed file identical to source"
     assert_mode "$TARGET" 755
     assert_no_file /tmp/nginx-manager.sh "temp file removed"
     assert_called "curl -fsSL https://gist.githubusercontent.com/Bart0llo/e746ec66324473d20a72f13588f9d3b3/raw/nginx-site.sh -o /tmp/nginx-manager.sh" \
@@ -25,12 +28,12 @@ t_fresh_install() {
 
 t_installs_certbot_by_default() {
     known_defect "D10: installer always installs certbot (decision: TLS deps optional)"
-    run_installer /src/nginx-site.sh >/dev/null
+    run_installer "$BUNDLE" >/dev/null
     assert_called "apt-get install -y curl jq nginx certbot python3-certbot-dns-cloudflare openssl" "certbot in default packages"
 }
 
 t_installed_app_runs() {
-    run_installer /src/nginx-site.sh >/dev/null
+    run_installer "$BUNDLE" >/dev/null
     fixture_configured
     local out rc
     out=$(printf 'q\n' | timeout 20 "$TARGET" 2>&1); rc=$?
@@ -45,18 +48,18 @@ t_update_preserves_data() {
 echo old version" > "$TARGET"; chmod 755 "$TARGET"
     local before
     before=$(cd "$MANAGER_DIR" && find . -type f -exec sha256sum {} + | sort)
-    run_installer /src/nginx-site.sh >/dev/null
+    run_installer "$BUNDLE" >/dev/null
     assert_eq 0 $? "update exits 0"
     assert_eq "$before" "$(cd "$MANAGER_DIR" && find . -type f -exec sha256sum {} + | sort)" \
         "config, sites.json, secrets and backups untouched"
-    assert_eq "$(sha256sum < /src/nginx-site.sh)" "$(sha256sum < "$TARGET")" "binary replaced"
+    assert_eq "$(sha256sum < "$BUNDLE")" "$(sha256sum < "$TARGET")" "binary replaced"
 }
 
 t_download_failure() {
     echo old > "$TARGET"
     mock_rc curl 22
     local out rc
-    out=$(run_installer /src/nginx-site.sh); rc=$?
+    out=$(run_installer "$BUNDLE"); rc=$?
     assert_eq 22 "$rc" "installer fails with curl's status"
     assert_not_contains "$out" "Installation completed" "no success message"
     assert_eq old "$(cat "$TARGET")" "existing install untouched"
@@ -77,7 +80,7 @@ t_invalid_syntax_rejected() {
 t_apt_failure_aborts() {
     mock_rc apt-get-install 100
     local out rc
-    out=$(run_installer /src/nginx-site.sh); rc=$?
+    out=$(run_installer "$BUNDLE"); rc=$?
     assert_eq 100 "$rc" "installer aborts (set -e)"
     assert_no_file "$TARGET" "nothing installed"
 }

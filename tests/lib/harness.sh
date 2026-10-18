@@ -5,7 +5,8 @@
 # it freely rewrites /etc/nginx, /etc/nginx-manager and /usr/local/bin.
 # ==========================================================
 
-APP="/src/nginx-site.sh"
+# NM_TEST_APP points the suite at another entry point (e.g. the bundle).
+APP="${NM_TEST_APP:-/src/nginx-site.sh}"
 RESULTS="/tmp/nm-results"
 OUT_DIR="/out"
 GOLDEN_DIR="/src/tests/golden"
@@ -155,7 +156,7 @@ create_test_cert() {
 
 reset_state() {
     rm -rf "$MANAGER_DIR" /var/log/nginx-manager /run/lock/nginx-manager.lock \
-        "$MOCK_RC" "$MOCK_LOG" /tmp/nm-app.sh /tmp/pwned* /tmp/nginx-manager.sh \
+        "$MOCK_RC" "$MOCK_LOG" /tmp/pwned* /tmp/nginx-manager.sh \
         /etc/victim.conf /usr/local/bin/nginx-manager /tmp/bounded.out \
         /etc/letsencrypt/live/soon.example.com
     rm -f "$SITES_AVAILABLE"/*.conf "$SITES_ENABLED"/*.conf \
@@ -192,17 +193,27 @@ fixture_cloudflare() {
 # ==========================================================
 # APP
 # ==========================================================
-# Loads the application's functions into the current shell (running its
-# start-up initialisation) without entering the interactive main menu.
-# A fixture must provide a finished config first, or first-run setup would
-# block reading stdin.
+# Loads the application's functions into the current shell (NM_NO_MAIN=1:
+# no root check, lock or menu), then runs the start-up initialisation steps
+# the tests rely on. A fixture must provide a finished config first, or
+# first-run setup would block reading stdin.
 load_app() {
-    if [[ "$(tail -n1 "$APP")" != "main_menu" ]]; then
-        fail "load_app: entry point changed, update the harness"
+    if ! NM_NO_MAIN=1 source "$APP" </dev/null >/dev/null 2>&1; then
+        fail "load_app: sourcing $APP failed"
         return 1
     fi
-    head -n -1 "$APP" > /tmp/nm-app.sh
-    source /tmp/nm-app.sh </dev/null >/dev/null 2>&1
+    {
+        init_directories
+        create_default_config
+        first_run_setup
+        create_database
+        create_snippets
+    } </dev/null >/dev/null 2>&1
+}
+
+# Builds the single-file script (tools/bundle.sh) at the given path.
+build_bundle() { # output
+    bash /src/tools/bundle.sh "$1" >/dev/null
 }
 
 # Runs the full application as a separate process with the given stdin.
@@ -211,7 +222,7 @@ run_app() { # input
 }
 
 # Prepares state for a run_app test by evaluating $1 with the app loaded in
-# a subshell (so its lock is released), then clears the mock call log.
+# a subshell, then clears the mock call log.
 seed() { # shell-code
     ( load_app && eval "$1" ) >/dev/null 2>&1
     : > "$MOCK_LOG"
