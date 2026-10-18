@@ -1,0 +1,52 @@
+# Publishes a GitHub Release when a version tag (vMAJOR.MINOR.PATCH) is
+# pushed: runs both test suites, builds the assets with tools/release.sh
+# and uploads nginx-site.sh, install.sh and SHA256SUMS. Nothing else
+# triggers it; an existing release for the tag is never overwritten.
+name: release
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+
+# Read-only by default; only the publish job may write (create the release).
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Test (modular checkout)
+        run: bash tests/run.sh
+
+      - name: Test (bundle)
+        run: NM_TEST_BUNDLE=1 bash tests/run.sh
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Build release assets
+        run: bash tools/release.sh "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY" dist/release
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --verify-tag \
+            --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" \
+            --notes "Install or update: see README.md, Installation and Updating." \
+            dist/release/nginx-site.sh dist/release/install.sh dist/release/SHA256SUMS

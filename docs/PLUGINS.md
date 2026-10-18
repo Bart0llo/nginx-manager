@@ -45,8 +45,10 @@ The plugin directory is:
 * `plugins/` next to `nginx-site.sh` when running from a checkout of the
   repository (it contains the `example` plugin);
 * `/usr/local/lib/nginx-manager/plugins/` for the installed single-file
-  script. The installer does not install any plugins; copy a plugin's
-  directory there.
+  script. The installer creates this directory if it is missing but never
+  installs, changes or removes plugins in it, also not on updates; copy a
+  plugin's directory there. Plugin settings, secrets and the enabled list
+  live under `/etc/nginx-manager/`, which the installer does not touch.
 
 The directory name must be the plugin's ID. Directories whose name is not
 a valid ID are listed as ignored. Hidden directories and plain files are

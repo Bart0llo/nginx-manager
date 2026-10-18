@@ -170,7 +170,9 @@ reset_state() {
         /etc/victim.conf /usr/local/bin/nginx-manager /tmp/bounded.out \
         /etc/letsencrypt/live/soon.example.com \
         /tmp/nm-plugins* /tmp/plugin-calls.log /usr/local/lib/nginx-manager \
-        /tmp/gum-script /tmp/gum-calls.log /tmp/gum-version /tmp/gum-version-rc
+        /tmp/gum-script /tmp/gum-calls.log /tmp/gum-version /tmp/gum-version-rc \
+        /tmp/mock-gh /tmp/mock-curl-hook /tmp/nm-release \
+        /tmp/nm-root /tmp/nm-src /usr/local/bin/.nginx-manager.new.*
     rm -f "$SITES_AVAILABLE"/*.conf "$SITES_ENABLED"/*.conf \
         /etc/nginx/snippets/proxy-common.conf /etc/nginx/snippets/tls-common.conf
     [[ -e /usr/bin/jq.off ]] && mv /usr/bin/jq.off /usr/bin/jq

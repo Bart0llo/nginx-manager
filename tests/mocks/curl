@@ -1,11 +1,53 @@
 #!/bin/bash
-# Fake curl for installer tests: "downloads" $MOCK_CURL_FILE to the -o target.
+# Fake curl for installer tests, standing in for public GitHub:
+#   https://api.github.com/<path>  served from /tmp/mock-gh/api/<path>
+#   https://github.com/<path>      served from /tmp/mock-gh/web/<path>
+# Missing files give 404. Prints the status for -w '%{http_code}' and
+# writes headers for -D. Anything that would send credentials (an
+# Authorization header, -u, -K, --oauth2-bearer, -n) is logged as
+# "credentials" in /tmp/mock-calls.log.
+#   /tmp/mock-rc/curl         exit with this status instead (network error)
+#   /tmp/mock-gh/status       answer with this HTTP status instead
+#   /tmp/mock-gh/headers      extra response headers
+#   /tmp/mock-curl-hook       sourced after the file is written (tests pause here)
 echo "curl $*" >> /tmp/mock-calls.log
 [[ -f /tmp/mock-rc/curl ]] && exit "$(cat /tmp/mock-rc/curl)"
-out=""
+out="" url="" headers=""
 while (($#)); do
-    [[ "$1" == "-o" ]] && { out="$2"; shift; }
+    case "$1" in
+        -o) out="$2"; shift ;;
+        -D) headers="$2"; shift ;;
+        -H)
+            [[ "${2,,}" == authorization:* ]] && echo "credentials: header" >> /tmp/mock-calls.log
+            shift
+            ;;
+        -u|--user|-K|--config|--oauth2-bearer|-n|--netrc|--netrc-file)
+            echo "credentials: $1" >> /tmp/mock-calls.log
+            ;;
+        -w|--proto|--proto-redir|--max-time|--connect-timeout) shift ;;
+        https://*) url="$1" ;;
+    esac
     shift
 done
-[[ -n "$out" && -f "$MOCK_CURL_FILE" ]] || exit 22
-cat "$MOCK_CURL_FILE" > "$out"
+case "$url" in
+    https://api.github.com/*) file="/tmp/mock-gh/api/${url#https://api.github.com/}" ;;
+    https://github.com/*) file="/tmp/mock-gh/web/${url#https://github.com/}" ;;
+    *) file="" ;;
+esac
+if [[ -f /tmp/mock-gh/status ]]; then
+    code=$(cat /tmp/mock-gh/status)
+elif [[ -n "$file" && -f "$file" ]]; then
+    code=200
+else
+    code=404
+fi
+if [[ "$code" == 200 ]]; then
+    cat "$file" > "$out"
+else
+    echo '{"message":"Not Found"}' > "$out"
+fi
+if [[ -n "$headers" ]]; then
+    { echo "HTTP/2 $code"; cat /tmp/mock-gh/headers 2>/dev/null; } > "$headers"
+fi
+[[ -f /tmp/mock-curl-hook ]] && source /tmp/mock-curl-hook
+printf '%s' "$code"

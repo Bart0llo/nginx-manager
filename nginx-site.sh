@@ -5,6 +5,10 @@
 # Nginx + Certbot + Cloudflare DNS
 # ==========================================================
 
+# "dev" in a checkout; tools/bundle.sh --version stamps release builds.
+# install.sh reads this line from a bundle without running it.
+NM_VERSION="dev"
+
 # ==========================================================
 # MODULES
 # ==========================================================
@@ -41,7 +45,7 @@ source "$NM_LIB_DIR/menu.sh"
 # ==========================================================
 usage() {
     cat <<EOF
-Usage: nginx-manager [--plain] [--non-interactive] [--help]
+Usage: nginx-manager [--plain] [--non-interactive] [--help] [--version]
 
 Interactive manager for NGINX reverse proxy sites (runs as root).
 
@@ -49,6 +53,7 @@ Interactive manager for NGINX reverse proxy sites (runs as root).
   --non-interactive  never wait for input: stop with exit status 1 where
                      an answer is needed
   -h, --help         show this help
+  --version          show the installed version
 
 Environment:
   NM_UI=auto|gum|plain   interface (default auto: gum $UI_GUM_MIN+ in a terminal)
@@ -65,6 +70,7 @@ main() {
     for arg in "$@"; do
         case "$arg" in
             -h|--help) usage; exit 0 ;;
+            --version) echo "nginx-manager $NM_VERSION"; exit 0 ;;
             --plain) NM_UI=plain ;;
             --non-interactive) NM_NONINTERACTIVE=1 ;;
             *)

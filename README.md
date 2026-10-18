@@ -17,29 +17,182 @@ Bash CLI for managing NGINX reverse proxy sites on Debian and Ubuntu.
 
 ## Installation
 
+NGINX Manager Pro is published as GitHub Releases of its public
+repository, written `OWNER/REPO` below. Each release has three files:
+
+| Asset           | Contents                                              |
+|-----------------|-------------------------------------------------------|
+| `nginx-site.sh` | the application: one Bash file with all its modules   |
+| `install.sh`    | the installer and updater for that release            |
+| `SHA256SUMS`    | SHA-256 checksums of both files                       |
+
+No GitHub account, token or GitHub CLI is needed: everything is
+downloaded anonymously over HTTPS. Git is not needed either.
+
+Download the installer of the latest release, read it, and run it:
+
 ```bash
-curl -fsSL https://gist.githubusercontent.com/Bart0llo/e746ec66324473d20a72f13588f9d3b3/raw/install.sh | sudo bash
+curl -fsSLO https://github.com/OWNER/REPO/releases/latest/download/install.sh
+less install.sh
+sudo bash install.sh
 ```
+
+It downloads `nginx-site.sh` and `SHA256SUMS` of the latest release
+(`--release vX.Y.Z` picks another one) and installs them. In one step,
+without reading it first:
+
+```bash
+curl -fsSL https://github.com/OWNER/REPO/releases/latest/download/install.sh | sudo bash
+curl -fsSL https://github.com/OWNER/REPO/releases/latest/download/install.sh | sudo bash -s -- --with-certbot
+```
+
+On a server without internet access, download the three files elsewhere
+(from the release page) and copy them over:
+
+```bash
+sha256sum -c SHA256SUMS
+sudo bash install.sh --bundle nginx-site.sh --sha256sums SHA256SUMS
+```
+
+`install.sh` from a release already knows its repository. A copy from a
+checkout needs `--repo OWNER/REPO` (or `NM_REPO`).
+
+### What the installer does
+
+1. Installs `curl`, `jq`, `nginx` and `openssl` with apt-get (plus certbot
+   with `--with-certbot`, see Requirements). `--no-deps` skips this and only
+   warns if `jq` or `nginx` is missing.
+2. Looks up the release with one request to the GitHub API, then downloads
+   `nginx-site.sh` and `SHA256SUMS` from the release's download URLs into a
+   private temporary directory. With `--bundle` it copies the local file
+   there instead. Only HTTPS is used, also after redirects. No credentials
+   are sent, and a `GH_TOKEN` in the environment is ignored.
+3. Checks the bundle without running it: SHA-256 against `SHA256SUMS`
+   (required for downloads) and against `NM_SHA256` if set; non-empty;
+   starts with `#!/bin/bash`; valid Bash (`bash -n`); every module listed in
+   its end marker present; its version matches the release tag. A
+   truncated file, or the modular `nginx-site.sh` from a checkout, is
+   refused.
+4. Installs it (see Updating for how a file is replaced) and reports the
+   old and new version.
+
+It never prompts, so it can run from scripts (apt-get runs with `-y` and
+`DEBIAN_FRONTEND=noninteractive`). Running it again is safe: if the same
+version is already installed, nothing is replaced. Run
+`bash install.sh --help` for all options.
+
+If GitHub cannot be reached, the release or repository does not exist,
+GitHub answers with an error or with data that is not a release, the
+installer names the problem and stops with a non-zero status. Requests to
+the GitHub API without credentials are limited to 60 per hour per IP
+address; an install or `--check` uses one. When the limit is used up, the
+installer says so: wait, or use `--bundle`.
+
+### Paths
+
+| Path                                                  | Installer                                                 |
+|-------------------------------------------------------|-----------------------------------------------------------|
+| `/usr/local/bin/nginx-manager`                        | the application (mode `0755`)                             |
+| `/usr/local/lib/nginx-manager/nginx-manager.previous` | the version the last update replaced                      |
+| `/usr/local/lib/nginx-manager/plugins/`               | created empty (`0755`) if missing; contents never changed |
+| `/usr/local/lib/nginx-manager/.install.lock`          | lets only one `install.sh` run at a time                  |
+| `/etc/nginx-manager/`                                 | never read or written                                     |
+
+`/etc/nginx-manager/` holds the configuration, `sites.json`, secrets,
+backups, the enabled-plugin list and plugin settings. Files are owned by
+the user running the installer (root). Existing directories keep their
+permissions. If `/usr/local/bin/nginx-manager` is a symbolic link (for
+example to a checkout), the installer refuses to replace it.
 
 After installation:
 
 ```bash
 nginx-manager
+nginx-manager --version
 ```
 
-The installer places the application in:
+### Checksums and trust
 
-```text
-/usr/local/bin/nginx-manager
+`SHA256SUMS` comes from the same release as the bundle. It detects a
+damaged or truncated download, but it does not prove who published the
+release: anyone who can publish a release can replace both files. For an
+independent check, pass a SHA-256 that you obtained through another
+trusted channel:
+
+```bash
+sudo NM_SHA256=<sha256> bash install.sh --bundle nginx-site.sh --sha256sums SHA256SUMS
 ```
+
+`install.sh` itself also comes from the release. Read it, or check it
+against a trusted hash, before you run it as root; the piped one-step
+form gives you no chance to.
+
+## Updating
+
+Check for a newer release (no root or credentials needed):
+
+```bash
+nginx-manager --version
+bash install.sh --check
+```
+
+Then install it the same way as a fresh installation. Use the
+`install.sh` of the new release:
+
+```bash
+curl -fsSLO https://github.com/OWNER/REPO/releases/latest/download/install.sh
+sudo bash install.sh
+```
+
+How an update replaces the program:
+
+* The installed version is not touched until the new one has been
+  downloaded and has passed every check.
+* The current file is copied to `nginx-manager.previous`. Then the new file,
+  written next to `/usr/local/bin/nginx-manager`, is renamed over it. On a
+  local filesystem a rename is atomic, so the command is always either the
+  complete old file or the complete new one. A manager that is already
+  running keeps the old version until it is restarted.
+* Configuration, sites, secrets, backups, enabled plugins, plugin settings
+  and the plugin directory are not touched.
+* If any step fails, the installer exits with a non-zero status, names the
+  step and shows no success message. The installed version is then unchanged.
+
+### Recovery
+
+* **Failed install or update:** the installed version is unchanged; fix the
+  reported cause and run the installer again. If only the final rename
+  failed, `nginx-manager.previous` already holds the current version.
+* **Interrupted (Ctrl-C, SIGTERM):** temporary files are removed; the
+  command is the old or the new version. After SIGKILL or a power loss,
+  staging files (`/usr/local/bin/.nginx-manager.new.*`) can remain; the
+  next run removes them.
+* **The new version misbehaves:** `sudo bash install.sh --rollback` puts
+  `nginx-manager.previous` back and keeps the version it replaces as the
+  new `nginx-manager.previous`, so running it again undoes the rollback.
+  This restores the program only. It does not undo changes that the newer
+  version made to sites or configuration while it was in use.
+* **Both copies unusable:** install a known release with `--release vX.Y.Z`
+  or `--bundle`.
+
+Limitations:
+
+* Only one previous version is kept.
+* The new file is flushed to disk before the rename, but the directory is
+  not. A power loss right after an update can bring back the old version;
+  run the installer again.
+* Releases are not signed; see Checksums and trust.
+* There are no automatic updates: the manager itself never contacts GitHub.
 
 ## Interface
 
 The manager works in any terminal with its built-in text menus. If
 [gum](https://github.com/charmbracelet/gum#installation) 0.15 or newer is
 installed, it is used automatically for arrow-key menus, searchable lists
-and confirmation dialogs. Nothing else changes, and the manager never
-installs gum itself.
+and confirmation dialogs. Nothing else changes. Neither the manager nor the
+installer installs gum; install it yourself from your distribution or from
+Charm's apt repository if you want it. Settings and Help show which
+interface is active and why.
 
 ```bash
 sudo nginx-manager --plain            # built-in menus even if gum is installed
@@ -49,7 +202,9 @@ sudo NO_COLOR=1 nginx-manager         # no colours
 
 Gum is only used when stdin, stdout and stderr are a terminal. Piped input
 is read line by line by the built-in menus. Colours are only used on a
-terminal.
+terminal. If gum is missing, too old or its version cannot be determined,
+the built-in menus are used. The automated tests use a stand-in for gum;
+they do not exercise a real gum binary.
 
 ## Requirements
 
@@ -72,7 +227,7 @@ default. Install it later from TLS & certificates -> Install TLS packages,
 or during installation:
 
 ```bash
-curl -fsSL https://gist.githubusercontent.com/Bart0llo/e746ec66324473d20a72f13588f9d3b3/raw/install.sh | sudo bash -s -- --with-certbot
+sudo bash install.sh --with-certbot
 ```
 
 This adds:
@@ -81,24 +236,6 @@ This adds:
 certbot
 python3-certbot-dns-cloudflare
 ```
-
-To have the installer verify the downloaded script, pass its expected
-SHA-256 from a source you trust (a checksum published next to the file on
-the same gist would not prove anything):
-
-```bash
-curl -fsSL https://gist.githubusercontent.com/Bart0llo/e746ec66324473d20a72f13588f9d3b3/raw/install.sh | sudo NM_SHA256=<sha256> bash
-```
-
-Without `NM_SHA256` the installer only checks the script's Bash syntax and
-says that the download was not verified.
-
-The check is done by `install.sh` itself, which also comes from the gist.
-When it is piped straight into `bash`, a tampered gist could serve an
-`install.sh` that skips the check, so the piped form only guards the
-`nginx-site.sh` download. For real assurance, download `install.sh` first,
-read it (or compare its SHA-256 with a trusted value), then run the local
-copy with `NM_SHA256` set.
 
 ## Configuration
 
@@ -151,13 +288,40 @@ Supported modes:
 * HTTPS
 * BOTH
 
-## Updating
+## Development and releases
 
-Run the installation command again:
+A checkout runs without installing anything and without GitHub access:
+`sudo ./nginx-site.sh` uses the checkout's `lib/` and `plugins/` and
+reports version `dev`.
 
 ```bash
-curl -fsSL https://gist.githubusercontent.com/Bart0llo/e746ec66324473d20a72f13588f9d3b3/raw/install.sh | sudo bash
+bash tools/bundle.sh                                # single file: dist/nginx-site.sh (not tracked)
+sudo bash install.sh --bundle dist/nginx-site.sh    # install that build locally
+bash tests/run.sh                                   # test suite (needs Docker)
+NM_TEST_BUNDLE=1 bash tests/run.sh                  # the same suite against the bundle
 ```
+
+The tests run in disposable `debian:stable` containers without network
+access. apt-get and curl (GitHub) are replaced by mocks, so the tests
+never touch the host, GitHub or a real installation. `NM_INSTALL_ROOT=DIR` makes
+`install.sh` install below `DIR` instead of `/`, without root and without
+installing packages; the tests use it for staging installs.
+
+To publish a release, push a version tag:
+
+```bash
+git tag v4.0.0
+git push origin v4.0.0
+```
+
+`.github/workflows/release.yml` runs only for tags of the form
+`vMAJOR.MINOR.PATCH`. It runs both test suites, builds the assets with
+`tools/release.sh` (which stamps the version into `nginx-site.sh` and the
+repository into `install.sh`), and publishes `nginx-site.sh`, `install.sh`
+and `SHA256SUMS` as a GitHub Release. It never overwrites an existing
+release. The tests run with read-only access to the repository; only the
+publish job may create the release, and it uses no repository secrets. `bash tools/release.sh v4.0.0 OWNER/REPO` builds the same files
+locally in `dist/release/`.
 
 ## Uninstall
 
@@ -167,4 +331,6 @@ The application can be removed with:
 sudo rm /usr/local/bin/nginx-manager
 ```
 
-Configuration files and managed NGINX sites are not removed automatically.
+`/usr/local/lib/nginx-manager/` holds the previous version and installed
+plugins; remove it too if you no longer need them. Configuration files and
+managed NGINX sites are not removed automatically.

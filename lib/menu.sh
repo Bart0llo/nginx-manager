@@ -107,9 +107,11 @@ help_screen() {
     ui_section "Command line"
     echo "  nginx-manager --plain            basic interface even with gum"
     echo "  nginx-manager --non-interactive  never wait for input (exit 1 instead)"
+    echo "  nginx-manager --version          installed version"
     echo "  NO_COLOR=1                       no colours"
 
     ui_section "Documentation"
-    echo "  README.md (configuration, TLS) and docs/PLUGINS.md (plugins)"
+    echo "  README.md (configuration, TLS, updating) and docs/PLUGINS.md (plugins)"
+    ui_kv "Version" "$NM_VERSION"
     pause
 }
