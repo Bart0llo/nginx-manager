@@ -13,6 +13,7 @@ Bash CLI for managing NGINX reverse proxy sites on Debian and Ubuntu.
 * Backups and rollback on failed changes
 * Basic system checks
 * JSON-based site database
+* Plugins (site validation, extra nginx directives, change notifications)
 
 ## Installation
 
@@ -109,6 +110,18 @@ Logs:
 ```text
 /var/log/nginx-manager/
 ```
+
+## Plugins
+
+Plugins add optional behaviour without changing the core: they can check
+a site before it is saved, add directives to its generated nginx
+configuration, and react when it changes or is deleted. Manage them from
+the main menu -> Plugins. Enabling a plugin changes no existing
+configuration until a site is edited or regenerated.
+
+Plugins run as root with the manager's privileges and are not sandboxed:
+install only plugins you trust. See [docs/PLUGINS.md](docs/PLUGINS.md)
+for the format, the hook contract and the example plugin.
 
 ## TLS
 

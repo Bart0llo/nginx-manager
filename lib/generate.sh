@@ -97,16 +97,19 @@ EOF
     return $rc
 }
 
+# generate_<tls> <file> <domain> <backend> [<server-extra> <location-extra>]
+# The extras are plugin directives (PLUGIN_OUTPUT): empty, or complete
+# indented lines, placed before and inside every proxying "location /".
 generate_http() {
     cat > "$1" <<EOF
 # NGINX_MANAGER_TLS=http
 server {
     listen 80;
     server_name $2;
-    location / {
+$4    location / {
         proxy_pass http://$3;
         include snippets/proxy-common.conf;
-    }
+$5    }
 }
 EOF
 }
@@ -138,10 +141,10 @@ server {
     ssl_certificate /etc/letsencrypt/live/$CERT_NAME/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/$CERT_NAME/privkey.pem;
     include snippets/tls-common.conf;
-    location / {
+$4    location / {
         proxy_pass http://$3;
         include snippets/proxy-common.conf;
-    }
+$5    }
 }
 EOF
 }
@@ -165,10 +168,10 @@ generate_both() {
 server {
     listen 80;
     server_name $2;
-    location / {
+$4    location / {
         proxy_pass http://$3;
         include snippets/proxy-common.conf;
-    }
+$5    }
 }
 server {
     listen 443 ssl http2;
@@ -176,10 +179,10 @@ server {
     ssl_certificate /etc/letsencrypt/live/$CERT_NAME/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/$CERT_NAME/privkey.pem;
     include snippets/tls-common.conf;
-    location / {
+$4    location / {
         proxy_pass http://$3;
         include snippets/proxy-common.conf;
-    }
+$5    }
 }
 EOF
 }
@@ -274,6 +277,23 @@ generate_site() {
         fi
     fi
 
+    # Directives from enabled plugins; with none the templates are unchanged.
+    # A failing plugin stops here, before anything is written.
+    local entry server_extra location_extra
+    entry=$(plugin_site_entry "$name")
+    if ! plugin_run_hook server-directives "$name" "$entry"; then
+        msg_error "Configuration for $name not generated: a plugin failed"
+        log "generate_site failed for $name: plugin server-directives failed"
+        return 1
+    fi
+    server_extra="$PLUGIN_OUTPUT"
+    if ! plugin_run_hook location-directives "$name" "$entry"; then
+        msg_error "Configuration for $name not generated: a plugin failed"
+        log "generate_site failed for $name: plugin location-directives failed"
+        return 1
+    fi
+    location_extra="$PLUGIN_OUTPUT"
+
     # Generate next to the target (same filesystem), so the final mv is an
     # atomic rename. The dot-name keeps it out of the *.conf import glob.
     local tmp
@@ -285,9 +305,9 @@ generate_site() {
 
     local rc=0
     case "$tls" in
-        http) generate_http "$tmp" "$domain" "$backend" || rc=1 ;;
-        https) generate_https "$tmp" "$domain" "$backend" || rc=1 ;;
-        both) generate_both "$tmp" "$domain" "$backend" || rc=1 ;;
+        http) generate_http "$tmp" "$domain" "$backend" "$server_extra" "$location_extra" || rc=1 ;;
+        https) generate_https "$tmp" "$domain" "$backend" "$server_extra" "$location_extra" || rc=1 ;;
+        both) generate_both "$tmp" "$domain" "$backend" "$server_extra" "$location_extra" || rc=1 ;;
         *)
             msg_error "Unknown TLS mode: $tls"
             rc=1

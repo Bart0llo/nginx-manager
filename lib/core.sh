@@ -18,6 +18,12 @@ LOCK_FILE="/run/lock/nginx-manager.lock"
 SNIPPETS_DIR="/etc/nginx/snippets"
 CF_DIR="/etc/nginx-manager/secrets"
 CF_FILE="$CF_DIR/cloudflare.ini"
+# Plugin code (nginx-site.sh points this at plugins/ when run from a
+# checkout), the enabled list, settings (<id>.conf) and secrets (<id>/).
+PLUGIN_DIR="/usr/local/lib/nginx-manager/plugins"
+PLUGINS_ENABLED="$MANAGER_DIR/plugins.enabled"
+PLUGIN_CONF_DIR="$MANAGER_DIR/plugins"
+PLUGIN_SECRETS_DIR="$CF_DIR"
 
 # ==========================================================
 # COLORS

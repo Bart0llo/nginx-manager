@@ -109,6 +109,7 @@ enable_site() {
         msg_success "Nginx configuration valid"
         msg_success "Nginx reloaded"
         log "Site enabled: $name"
+        plugin_notify site-applied "$name"
         return 0
     else
         # Only remove the symlink if we created it; never destroy a
@@ -154,6 +155,7 @@ disable_site() {
         msg_success "Nginx configuration valid"
         msg_success "Nginx reloaded"
         log "Site disabled: $name"
+        plugin_notify site-applied "$name"
         return 0
     else
         echo

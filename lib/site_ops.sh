@@ -10,7 +10,9 @@
 # Return codes:
 #   0  success
 #   1  the operation failed (any rollback has already been attempted)
-#   2  input rejected; nothing was changed
+#   2  input rejected (also by a plugin's validate-site); nothing was changed
+# Plugin informational hooks (site-applied, site-deleted) run after a
+# success; their failures are reported but do not change the result.
 # ==========================================================
 
 # ==========================================================
@@ -59,6 +61,10 @@ site_create() {
         msg_error "Invalid TLS mode: $tls"
         return 2
     fi
+    if ! plugin_run_hook validate-site "$name" "$(plugin_site_entry "$name" "$domain" "$backend" "$tls")"; then
+        msg_error "Site rejected by a plugin; nothing was changed"
+        return 2
+    fi
 
     # enabled starts false; enable_site is the only thing allowed to flip it,
     # so the DB never claims "enabled" while no symlink actually exists.
@@ -77,6 +83,7 @@ site_create() {
         fi
         return 1
     fi
+    plugin_notify site-applied "$name"
 }
 
 # site_update <name> <domain> <backend> <tls>
@@ -97,6 +104,10 @@ site_update() {
     fi
     if ! validate_tls "$tls"; then
         msg_error "Invalid TLS mode: $tls"
+        return 2
+    fi
+    if ! plugin_run_hook validate-site "$name" "$(plugin_site_entry "$name" "$domain" "$backend" "$tls")"; then
+        msg_error "Change rejected by a plugin; nothing was changed"
         return 2
     fi
 
@@ -125,6 +136,7 @@ site_update() {
     if [[ "$old_enabled" != "true" ]]; then
         echo
         msg_success "Site updated (disabled, not reloaded)"
+        plugin_notify site-applied "$name"
         return 0
     fi
 
@@ -139,6 +151,7 @@ site_update() {
         msg_success "Nginx configuration valid"
         msg_success "Nginx reloaded"
         log "Site edited: $name"
+        plugin_notify site-applied "$name"
         return 0
     fi
 
@@ -181,6 +194,9 @@ site_delete() {
 
     # Only a symlink is removed from sites-enabled; anything else stops here.
     site_enabled_state "$name" >/dev/null || return 1
+    # site-deleted gets the entry as it was, plugin data included.
+    local entry
+    entry=$(plugin_site_entry "$name")
 
     if ! backup_file "$conf"; then
         echo
@@ -198,13 +214,15 @@ site_delete() {
         return 1
     fi
 
-    local rc=0
+    local rc=0 removed=0
     if ! rm -f "$conf"; then
         msg_warning "Failed to remove $conf"
         rc=1
     elif ! db_remove "$name"; then
         msg_warning "Failed to remove $name from database"
         rc=1
+    else
+        removed=1
     fi
     reload_nginx || rc=1
 
@@ -216,6 +234,9 @@ site_delete() {
         msg_warning "Site '$name' was only partly deleted - see the messages above"
         log "Site partly deleted: $name"
     fi
+    # Once the entry is gone, plugins clean up after it (even if the reload
+    # failed).
+    ((removed)) && plugin_notify site-deleted "$name" "$entry"
     return $rc
 }
 

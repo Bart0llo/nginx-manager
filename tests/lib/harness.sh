@@ -158,7 +158,8 @@ reset_state() {
     rm -rf "$MANAGER_DIR" /var/log/nginx-manager /run/lock/nginx-manager.lock \
         "$MOCK_RC" "$MOCK_LOG" /tmp/pwned* /tmp/nginx-manager.sh \
         /etc/victim.conf /usr/local/bin/nginx-manager /tmp/bounded.out \
-        /etc/letsencrypt/live/soon.example.com
+        /etc/letsencrypt/live/soon.example.com \
+        /tmp/nm-plugins* /tmp/plugin-calls.log /usr/local/lib/nginx-manager
     rm -f "$SITES_AVAILABLE"/*.conf "$SITES_ENABLED"/*.conf \
         /etc/nginx/snippets/proxy-common.conf /etc/nginx/snippets/tls-common.conf
     [[ -e /usr/bin/jq.off ]] && mv /usr/bin/jq.off /usr/bin/jq

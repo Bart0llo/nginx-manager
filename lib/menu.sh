@@ -20,6 +20,7 @@ main_menu() {
         echo "  [3] System Check"
         echo "  [4] Backups"
         echo "  [5] Logs"
+        echo "  [6] Plugins"
         echo
         echo "  [Q] Quit"
         echo
@@ -34,6 +35,7 @@ main_menu() {
             3) system_check ;;
             4) show_backups ;;
             5) show_logs ;;
+            6) plugins_menu ;;
             q) clear; exit 0 ;;
             "") ;;
             *) msg_error "Invalid option"; pause ;;

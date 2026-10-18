@@ -18,6 +18,8 @@ if [[ ! -f "$NM_LIB_DIR/core.sh" ]]; then
     return 1 2>/dev/null || exit 1
 fi
 source "$NM_LIB_DIR/core.sh"
+# A checkout uses its own plugins/ directory; the bundle keeps core.sh's.
+PLUGIN_DIR="$(dirname "$NM_LIB_DIR")/plugins"
 source "$NM_LIB_DIR/ui.sh"
 source "$NM_LIB_DIR/config.sh"
 source "$NM_LIB_DIR/db.sh"
@@ -25,6 +27,7 @@ source "$NM_LIB_DIR/validate.sh"
 source "$NM_LIB_DIR/backup.sh"
 source "$NM_LIB_DIR/generate.sh"
 source "$NM_LIB_DIR/nginx.sh"
+source "$NM_LIB_DIR/plugins.sh"
 source "$NM_LIB_DIR/site_ops.sh"
 source "$NM_LIB_DIR/sites.sh"
 source "$NM_LIB_DIR/tls.sh"
