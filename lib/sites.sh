@@ -280,22 +280,7 @@ add_site() {
         esac
     done
 
-    # enabled starts false; enable_site is the only thing allowed to flip it,
-    # so the DB never claims "enabled" while no symlink actually exists.
-    if ! db_save "$name" "$domain" "$backend" "$tls" false; then
-        msg_error "Failed to save site to database"
-        pause
-        return
-    fi
-
-    if ! generate_site "$name"; then
-        echo
-        msg_error "Could not create site"
-        echo
-        echo "No changes were committed."
-        if ! db_remove "$name"; then
-            msg_warning "Failed to roll back database entry for $name - manual cleanup may be required"
-        fi
+    if ! site_create "$name" "$domain" "$backend" "$tls"; then
         pause
         return
     fi
@@ -315,13 +300,10 @@ add_site() {
 
 edit_site() {
     local name="$1"
-    local old_domain old_backend old_tls old_enabled
-    old_domain=$(db_get "$name" domain)
-    old_backend=$(db_get "$name" backend)
-    old_tls=$(db_get "$name" tls)
-    old_enabled=$(db_get "$name" enabled)
-
-    local domain="$old_domain" backend="$old_backend" tls="$old_tls"
+    local domain backend tls
+    domain=$(db_get "$name" domain)
+    backend=$(db_get "$name" backend)
+    tls=$(db_get "$name" tls)
 
     header
     echo -e "${BOLD}EDIT SITE: ${name}${NC}"
@@ -375,55 +357,7 @@ edit_site() {
         esac
     done
 
-    # Preserve the site's actual current enabled state - editing must never
-    # silently flip a disabled site to enabled.
-    if ! db_save "$name" "$domain" "$backend" "$tls" "$old_enabled"; then
-        msg_error "Failed to update database, aborting edit"
-        pause
-        return
-    fi
-
-    if ! generate_site "$name"; then
-        msg_error "Could not generate configuration, restoring previous settings"
-        db_save "$name" "$old_domain" "$old_backend" "$old_tls" "$old_enabled"
-        pause
-        return
-    fi
-
-    if [[ "$old_enabled" != "true" ]]; then
-        echo
-        msg_success "Site updated (disabled, not reloaded)"
-        pause
-        return
-    fi
-
-    echo
-    if test_nginx_config; then
-        systemctl reload nginx
-        msg_success "Site updated"
-        msg_success "Nginx configuration valid"
-        msg_success "Nginx reloaded"
-        log "Site edited: $name"
-    else
-        echo
-        msg_error "New configuration invalid"
-        echo
-        echo "Restoring previous configuration..."
-        if [[ -n "$LAST_BACKUP" ]]; then
-            cp "$LAST_BACKUP" "$NGINX_AVAILABLE/$name.conf"
-        fi
-        db_save "$name" "$old_domain" "$old_backend" "$old_tls" "$old_enabled"
-
-        if test_nginx_config; then
-            systemctl reload nginx
-            msg_warning "Previous configuration restored and reloaded"
-            log "Edit rolled back for $name after failed validation"
-        else
-            msg_error "Restored configuration still fails validation for $name - manual intervention required"
-            log "Rollback FAILED validation for $name after edit"
-        fi
-    fi
-
+    site_update "$name" "$domain" "$backend" "$tls"
     pause
 }
 
@@ -461,15 +395,7 @@ delete_site() {
     fi
 
     echo
-    backup_file "$NGINX_AVAILABLE/$name.conf"
-    rm -f "$NGINX_AVAILABLE/$name.conf" "$NGINX_ENABLED/$name.conf"
-    if ! db_remove "$name"; then
-        msg_warning "Failed to remove $name from database"
-    fi
-    reload_nginx
-
-    echo
-    msg_success "Site '$name' deleted"
+    site_delete "$name"
     pause
     return 0
 }
@@ -504,20 +430,9 @@ import_sites() {
     echo "Searching nginx configs..."
     echo
 
-    local imported=0
+    local imported=0 file
     for file in "$NGINX_AVAILABLE"/*.conf; do
-        [[ ! -f "$file" ]] && continue
-        name=$(basename "$file" .conf)
-        db_exists "$name" && continue
-        domain=$(grep server_name "$file" | head -1 | awk '{print $2}' | sed 's/;//')
-        backend=$(grep proxy_pass "$file" | head -1 | awk '{print $2}' | sed 's/http:\/\///' | sed 's/;//')
-        [[ -z "$domain" ]] && continue
-        [[ -z "$backend" ]] && backend="unknown"
-        tls="http"
-        grep -q "listen 443" "$file" && tls="https"
-        db_save "$name" "$domain" "$backend" "$tls" false
-        msg_success "Imported: $name"
-        ((imported++))
+        site_import "$file" && ((imported++))
     done
 
     echo

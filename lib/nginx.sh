@@ -27,8 +27,10 @@ reload_nginx() {
 
 # Transactionally enables a site: symlink -> test -> commit-or-rollback.
 # Leaves the previous working state intact if validation fails.
+# Returns 2 without changes if the name is not a managed site.
 enable_site() {
     local name="$1"
+    require_site "$name" || return 2
     local conf="$NGINX_AVAILABLE/$name.conf"
     local link="$NGINX_ENABLED/$name.conf"
 
@@ -74,8 +76,10 @@ enable_site() {
 
 # Disabling can only move nginx toward a valid state, so it always proceeds;
 # it still reports (but does not hide) unrelated pre-existing config errors.
+# Returns 2 without changes if the name is not a managed site.
 disable_site() {
     local name="$1"
+    require_site "$name" || return 2
     local link="$NGINX_ENABLED/$name.conf"
 
     rm -f "$link"
