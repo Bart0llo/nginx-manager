@@ -25,6 +25,18 @@ while IFS= read -r f; do
 done < <(find . -name '*.sh' -not -path './tests/.out/*' -not -path './.git/*' | sort)
 echo
 
+# The entry point is run directly (./nginx-site.sh, or via a symlink), so git
+# must record it as executable. Checked here because Docker Desktop shows
+# bind-mounted files as 777, which hides a missing bit inside the container.
+echo "Executable bit (git index):"
+if mode=$(git ls-files -s -- nginx-site.sh 2>/dev/null) && [[ -n "$mode" ]]; then
+    if [[ "${mode%% *}" == 100755 ]]; then echo "  ok   nginx-site.sh"
+    else echo "  FAIL nginx-site.sh is ${mode%% *}, expected 100755"; syntax_failed=1; fi
+else
+    echo "  skip (not a git checkout)"
+fi
+echo
+
 echo "Building test image..."
 docker build -q -t "$IMAGE" tests/ >/dev/null || { echo "image build failed"; exit 1; }
 
