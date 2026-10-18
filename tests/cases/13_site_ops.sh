@@ -144,6 +144,48 @@ t_site_update_invalid_config_rolls_back() {
     assert_db '.app.backend == "127.0.0.1:8080" and .app.enabled == true' "db restored"
 }
 
+# D3: edits and their rollbacks keep created and plugin-owned fields.
+t_site_update_preserves_metadata() {
+    fixture_configured; load_app
+    new_site app http; enable_site app >/dev/null 2>&1
+    db_write test app '.app.created = "2025-01-01T00:00:00Z" | .app.plugins = {"x":{"k":[1,2]}}'
+    local keep='.app.created == "2025-01-01T00:00:00Z" and .app.plugins == {"x":{"k":[1,2]}}'
+    site_update app app.lan.example.com 127.0.0.1:9090 http </dev/null >/dev/null 2>&1
+    assert_db "$keep and .app.backend == \"127.0.0.1:9090\"" "successful edit keeps metadata"
+    site_update app app.lan.example.com "$BAD_BACKEND" http </dev/null >/dev/null 2>&1
+    assert_db "$keep and .app.backend == \"127.0.0.1:9090\"" "rollback after invalid config keeps metadata"
+    site_update app app.other.com 127.0.0.1:9090 https </dev/null >/dev/null 2>&1
+    assert_db "$keep and .app.tls == \"http\"" "rollback after generation failure keeps metadata"
+}
+
+# D2: the edit is valid and kept, but a failed reload is reported as such.
+t_site_update_reload_failure_reported() {
+    fixture_configured; load_app
+    new_site app http; enable_site app >/dev/null 2>&1; mock_rc systemctl-reload 1
+    local out rc
+    out=$(site_update app app.lan.example.com 127.0.0.1:9090 http 2>&1 </dev/null); rc=$?
+    assert_eq 1 "$rc" "returns 1"
+    assert_contains "$out" "Nginx reload failed (systemctl exit 1)" "failure reported"
+    assert_not_contains "$out" "Nginx reloaded" "no reload claimed"
+    assert_contains "$out" "Site updated, but nginx was not reloaded" "partial result explained"
+    assert_db '.app.backend == "127.0.0.1:9090"' "valid edit kept"
+}
+
+# D5 review: a failed restore is not reported as a "restored configuration".
+t_site_update_restore_failure_reported() {
+    fixture_configured; load_app
+    new_site app http; enable_site app >/dev/null 2>&1; : > "$MOCK_LOG"
+    cat() { [[ -n "$1" && "$1" == "$LAST_BACKUP" ]] && return 1; command cat "$@"; }
+    local out rc
+    out=$(site_update app app.lan.example.com "$BAD_BACKEND" http 2>&1 </dev/null); rc=$?
+    unset -f cat
+    assert_eq 1 "$rc" "returns 1"
+    assert_contains "$out" "Failed to restore $SITES_AVAILABLE/app.conf" "restore failure reported"
+    assert_contains "$out" "invalid new configuration is still in $SITES_AVAILABLE/app.conf" "remaining state explained"
+    assert_not_contains "$out" "Restored configuration" "no restore claimed"
+    assert_not_called "systemctl reload" "no reload"
+}
+
 t_site_update_generation_failure() {
     fixture_configured; load_app
     new_site web http web.other.com
@@ -219,6 +261,62 @@ t_site_delete_reports_reload_failure() {
     assert_contains "$out" "Nginx config invalid" "reload failure shown"
     assert_no_file "$SITES_AVAILABLE/app.conf" "site still removed"
     assert_db 'has("app") | not' "db entry removed"
+}
+
+# D9: the backup comes first; when it fails nothing is removed.
+t_site_delete_backup_failure_keeps_site() {
+    fixture_configured; load_app
+    new_site app http; enable_site app >/dev/null 2>&1; : > "$MOCK_LOG"
+    rm -rf "$MANAGER_DIR/backups"; touch "$MANAGER_DIR/backups"
+    local before out rc
+    before=$(db_snapshot)
+    out=$(site_delete app 2>&1 </dev/null); rc=$?
+    assert_eq 1 "$rc" "returns 1"
+    assert_not_contains "$out" "Site 'app' deleted" "no success claimed"
+    assert_file "$SITES_AVAILABLE/app.conf" "config kept"
+    assert_symlink "$SITES_ENABLED/app.conf" "symlink kept"
+    assert_eq "$before" "$(db_snapshot)" "db unchanged"
+    assert_not_called "systemctl reload" "no reload"
+    assert_contains "$(cat /var/log/nginx-manager/manager.log)" "site_delete aborted for app: backup failed" "logged"
+}
+
+# D9: a later step failing is reported as a partial delete, not success.
+t_site_delete_reports_partial_failure() {
+    fixture_configured; load_app
+    new_site app http
+    db_remove() { msg_error "Failed to update database (jq error)"; return 1; }
+    local out rc
+    out=$(site_delete app 2>&1 </dev/null); rc=$?
+    assert_eq 1 "$rc" "returns 1"
+    assert_contains "$out" "Failed to remove app from database" "failed step named"
+    assert_contains "$out" "Site 'app' was only partly deleted" "partial result reported"
+    assert_not_contains "$out" "Site 'app' deleted" "no success claimed"
+
+    unset -f db_remove
+    new_site web http
+    echo 'server { this_is_not_a_directive; }' > "$SITES_ENABLED/broken.conf"
+    out=$(site_delete web 2>&1 </dev/null)
+    assert_contains "$out" "Site 'web' was only partly deleted" "reload failure reported as partial"
+}
+
+# D9: the details screen stays open when the delete did not happen.
+t_cli_delete_aborted_stays_in_details() {
+    fixture_configured; load_app
+    new_site app http
+    rm -rf "$MANAGER_DIR/backups"; touch "$MANAGER_DIR/backups"
+    delete_site app <<< $'app\n\n' >/dev/null 2>&1
+    assert_eq 1 $? "delete_site returns 1 while the site still exists"
+}
+
+# D2: reload_nginx used to return 0 after a failed systemctl reload.
+t_site_delete_reports_systemctl_failure() {
+    fixture_configured; load_app
+    new_site app http; enable_site app >/dev/null 2>&1; mock_rc systemctl-reload 1
+    local out rc
+    out=$(site_delete app 2>&1 </dev/null); rc=$?
+    assert_eq 1 "$rc" "returns 1"
+    assert_contains "$out" "Nginx reload failed (systemctl exit 1)" "failure reported"
+    assert_not_contains "$out" "Nginx reload OK" "no reload claimed"
 }
 
 # ==========================================================
@@ -447,4 +545,20 @@ t_site_create_keeps_strict_names() {
     out=$(run_app '1\na\nexample.com\napp\napp.lan.example.com\n127.0.0.1:8080\n1\nn\n\nq\nq\n')
     assert_contains "$out" "Invalid name (letters, numbers, - and _ only)" "add prompt rejects dotted name"
     assert_db '(has("example.com") | not) and has("app")' "only the valid name was created"
+}
+
+# D6: a regular file where the enabled symlink should be stops the delete
+# before anything is removed.
+t_site_delete_refuses_unexpected_object() {
+    fixture_configured; load_app
+    new_site app http
+    echo "# hand-made" > "$SITES_ENABLED/app.conf"
+    local before out rc
+    before=$(db_snapshot)
+    out=$(site_delete app 2>&1 </dev/null); rc=$?
+    assert_eq 1 "$rc" "returns 1"
+    assert_contains "$out" "$SITES_ENABLED/app.conf is not a symlink" "reason shown"
+    assert_eq "# hand-made" "$(cat "$SITES_ENABLED/app.conf")" "file left alone"
+    assert_file "$SITES_AVAILABLE/app.conf" "config kept"
+    assert_eq "$before" "$(db_snapshot)" "db unchanged"
 }

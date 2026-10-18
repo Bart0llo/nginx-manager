@@ -104,7 +104,10 @@ site_update() {
     old_domain=$(db_get "$name" domain)
     old_backend=$(db_get "$name" backend)
     old_tls=$(db_get "$name" tls)
-    old_enabled=$(db_get "$name" enabled)
+    # The symlink, not the db flag, says whether the site is live (and so
+    # whether the new config must pass nginx -t); the db is corrected to it.
+    old_enabled=$(site_enabled_state "$name") || return 1
+    sync_enabled_state "$name"
 
     # Preserve the site's actual current enabled state - editing must never
     # silently flip a disabled site to enabled.
@@ -127,7 +130,11 @@ site_update() {
 
     echo
     if test_nginx_config; then
-        systemctl reload nginx
+        if ! reload_nginx_service; then
+            msg_warning "Site updated, but nginx was not reloaded - the change is not live yet"
+            log "Site edited: $name (nginx reload failed)"
+            return 1
+        fi
         msg_success "Site updated"
         msg_success "Nginx configuration valid"
         msg_success "Nginx reloaded"
@@ -139,15 +146,21 @@ site_update() {
     msg_error "New configuration invalid"
     echo
     echo "Restoring previous configuration..."
-    if [[ -n "$LAST_BACKUP" ]]; then
-        cp "$LAST_BACKUP" "$NGINX_AVAILABLE/$name.conf"
-    fi
     db_save "$name" "$old_domain" "$old_backend" "$old_tls" "$old_enabled"
+    if [[ -n "$LAST_BACKUP" ]] && ! restore_backup "$LAST_BACKUP" "$NGINX_AVAILABLE/$name.conf"; then
+        msg_error "The invalid new configuration is still in $NGINX_AVAILABLE/$name.conf; nginx was not reloaded - fix it manually (backup: $LAST_BACKUP)"
+        log "Rollback FAILED for $name after edit: backup could not be restored"
+        return 1
+    fi
 
     if test_nginx_config; then
-        systemctl reload nginx
-        msg_warning "Previous configuration restored and reloaded"
-        log "Edit rolled back for $name after failed validation"
+        if reload_nginx_service; then
+            msg_warning "Previous configuration restored and reloaded"
+            log "Edit rolled back for $name after failed validation"
+        else
+            msg_warning "Previous configuration restored, but nginx was not reloaded"
+            log "Edit rolled back for $name after failed validation (nginx reload failed)"
+        fi
     else
         msg_error "Restored configuration still fails validation for $name - manual intervention required"
         log "Rollback FAILED validation for $name after edit"
@@ -158,44 +171,107 @@ site_update() {
 # site_delete <name>
 # Removes the site's configuration, symlink and database entry (keeping a
 # backup of the configuration) and reloads nginx. Asks no confirmation:
-# callers must confirm first. Returns 1 if the site was removed but the
-# database update or the nginx reload failed.
+# callers must confirm first. Nothing is removed unless the backup succeeds.
+# Returns 1 if the delete was aborted, or if a later step failed (reported
+# as a partial delete).
 site_delete() {
     local name="$1"
     require_site "$name" || return 2
+    local conf="$NGINX_AVAILABLE/$name.conf" link="$NGINX_ENABLED/$name.conf"
+
+    # Only a symlink is removed from sites-enabled; anything else stops here.
+    site_enabled_state "$name" >/dev/null || return 1
+
+    if ! backup_file "$conf"; then
+        echo
+        msg_error "Site '$name' was NOT deleted: its configuration could not be backed up"
+        log "site_delete aborted for $name: backup failed"
+        return 1
+    fi
+
+    # Disable first: a symlink left pointing at a removed config would
+    # break nginx -t for every site.
+    if ! rm -f "$link"; then
+        echo
+        msg_error "Site '$name' was NOT deleted: could not remove $link"
+        log "site_delete aborted for $name: could not remove $link"
+        return 1
+    fi
 
     local rc=0
-    backup_file "$NGINX_AVAILABLE/$name.conf"
-    rm -f "$NGINX_AVAILABLE/$name.conf" "$NGINX_ENABLED/$name.conf"
-    if ! db_remove "$name"; then
+    if ! rm -f "$conf"; then
+        msg_warning "Failed to remove $conf"
+        rc=1
+    elif ! db_remove "$name"; then
         msg_warning "Failed to remove $name from database"
         rc=1
     fi
     reload_nginx || rc=1
 
     echo
-    msg_success "Site '$name' deleted"
+    if ((rc == 0)); then
+        msg_success "Site '$name' deleted"
+        log "Site deleted: $name"
+    else
+        msg_warning "Site '$name' was only partly deleted - see the messages above"
+        log "Site partly deleted: $name"
+    fi
     return $rc
 }
 
 # site_import <config-file>
-# Adds an existing nginx config as a disabled site, named after the file.
-# The config file itself is not modified. Returns 2 (silently) when the
-# file is skipped: missing, already managed, or without a server_name.
+# Adds an existing nginx config as a site, named after the file, recording
+# whether it is currently enabled. The config file itself is not modified.
+# Returns 2 when the file is skipped: silently if it is missing, already
+# managed or has no server_name; with a reason if its server_name or
+# proxy_pass cannot be expressed as a managed site (domain + host:port).
 site_import() {
     local file="$1"
     [[ -f "$file" ]] || return 2
 
-    local name domain backend tls
+    local name domain proxy backend tls statements
     name=$(basename "$file" .conf)
     db_exists "$name" && return 2
-    domain=$(grep server_name "$file" | head -1 | awk '{print $2}' | sed 's/;//')
-    backend=$(grep proxy_pass "$file" | head -1 | awk '{print $2}' | sed 's/http:\/\///' | sed 's/;//')
+    statements=$(conf_statements "$file")
+    domain=$(conf_value "$file" server_name)
     [[ -z "$domain" ]] && return 2
-    [[ -z "$backend" ]] && backend="unknown"
-    tls="http"
-    grep -q "listen 443" "$file" && tls="https"
 
-    db_save "$name" "$domain" "$backend" "$tls" false || return 1
+    if ! validate_domain "$domain"; then
+        msg_warning "Skipped $name: server_name '$domain' is not a single domain"
+        return 2
+    fi
+    proxy=$(conf_value "$file" proxy_pass)
+    if [[ -z "$proxy" ]]; then
+        msg_warning "Skipped $name: no proxy_pass backend found"
+        return 2
+    fi
+    backend="${proxy#http://}"
+    if [[ "$backend" == "$proxy" ]] || ! validate_backend "$backend"; then
+        msg_warning "Skipped $name: backend '$proxy' is not http://host:port"
+        return 2
+    fi
+
+    # HTTPS plus a plain-HTTP server that does not just redirect = BOTH.
+    tls="http"
+    if grep -qE '^listen ([^ ]*:)?443( |$)' <<< "$statements"; then
+        tls="https"
+        if grep -qE '^listen ([^ ]*:)?80( |$)' <<< "$statements" \
+            && ! grep -qE '^return 30[18] https://' <<< "$statements"; then
+            tls="both"
+        fi
+    fi
+
+    # Record whether the site is live; importing never enables or disables.
+    local enabled
+    enabled=$(site_enabled_state "$name") || return 1
+
+    db_save "$name" "$domain" "$backend" "$tls" "$enabled" || return 1
     msg_success "Imported: $name"
+
+    local lost
+    lost=$(conf_unsupported_statements "$file")
+    if [[ -n "$lost" ]]; then
+        msg_warning "$name has directives NGINX Manager cannot reproduce; edit and regenerate will refuse to replace its config:"
+        sed 's/^/    /' <<< "$lost"
+    fi
 }

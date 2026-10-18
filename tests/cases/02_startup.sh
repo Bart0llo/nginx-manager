@@ -106,21 +106,164 @@ t_missing_modules_reported() {
     assert_contains "$out" "modules not found in /tmp/lib" "names the missing directory"
 }
 
-t_snippets_overwritten_on_start() {
-    known_defect "D4: snippets overwritten on every start, no backup"
-    fixture_configured
-    mkdir -p /etc/nginx/snippets
-    echo "# local customisation" > /etc/nginx/snippets/proxy-common.conf
+SNIP=/etc/nginx/snippets/proxy-common.conf
+
+# D4: a snippet that already has the managed content is not rewritten.
+t_snippets_unchanged_not_rewritten() {
+    fixture_configured; load_app
+    touch -d '2020-01-01 00:00:00' "$SNIP"
+    local before
+    before=$(stat -c '%i %Y' "$SNIP")
     run_app 'q\n' >/dev/null
-    assert_not_contains "$(cat /etc/nginx/snippets/proxy-common.conf)" "local customisation" \
-        "customised snippet replaced"
-    assert_eq "" "$(ls "$MANAGER_DIR/backups")" "no backup of the replaced snippet"
+    assert_eq "$before" "$(stat -c '%i %Y' "$SNIP")" "same inode and mtime after start"
+    assert_eq "" "$(ls "$MANAGER_DIR/backups")" "no backup for an unchanged snippet"
 }
 
-t_config_is_executed_when_loaded() {
-    known_defect "D8: config.conf is sourced; email validation lets shell syntax through"
+# D4: a customised snippet is backed up, then atomically replaced keeping its
+# mode, and the replacement is reported and logged.
+t_custom_snippet_backed_up_before_replace() {
+    fixture_configured
+    mkdir -p /etc/nginx/snippets
+    echo "# local customisation" > "$SNIP"; chmod 640 "$SNIP"
     local out
-    out=$(run_app 'lan.example.com\nx$(touch /tmp/pwned)@example.com\nxq\n')
-    assert_contains "$out" "Initial setup completed" "email with \$(...) accepted"
-    assert_file /tmp/pwned "command substitution in config ran on load"
+    out=$(run_app 'q\n')
+    golden_compare proxy-common.conf "$SNIP"
+    assert_mode "$SNIP" 640 "mode kept"
+    assert_eq "# local customisation" "$(cat "$MANAGER_DIR"/backups/proxy-common.conf_*.bak)" "custom content backed up"
+    assert_contains "$out" "differed from the managed version and was replaced (backup: $MANAGER_DIR/backups/proxy-common.conf_" "replacement reported"
+    assert_contains "$(cat /var/log/nginx-manager/manager.log)" "Snippet replaced: $SNIP (backup: " "replacement logged"
+    assert_eq "" "$(ls -A /etc/nginx/snippets | grep '^\.')" "no temp files left"
+}
+
+# Customised snippet + loaded app, for the failure-path tests below.
+custom_snippet() {
+    fixture_configured; load_app
+    echo "# local customisation" > "$SNIP"
+}
+
+t_snippet_backup_failure_keeps_custom() {
+    custom_snippet
+    rm -rf "$MANAGER_DIR/backups"; touch "$MANAGER_DIR/backups"
+    local out rc
+    out=$(create_snippets 2>&1 </dev/null); rc=$?
+    assert_eq 1 "$rc" "returns 1"
+    assert_eq "# local customisation" "$(cat "$SNIP")" "custom snippet kept"
+    assert_contains "$out" "could not be backed up; left unchanged" "reason shown"
+    golden_compare tls-common.conf /etc/nginx/snippets/tls-common.conf
+}
+
+t_snippet_temp_file_failure_keeps_custom() {
+    custom_snippet
+    mktemp() { return 1; }
+    local out rc
+    out=$(create_snippets 2>&1 </dev/null); rc=$?
+    assert_eq 1 "$rc" "returns 1"
+    assert_eq "# local customisation" "$(cat "$SNIP")" "custom snippet kept"
+    assert_contains "$out" "Failed to write snippet $SNIP" "reason shown"
+}
+
+t_snippet_replace_failure_keeps_custom() {
+    custom_snippet
+    mv() { return 1; }
+    local out rc
+    out=$(create_snippets 2>&1 </dev/null); rc=$?
+    assert_eq 1 "$rc" "returns 1"
+    assert_eq "# local customisation" "$(cat "$SNIP")" "custom snippet kept"
+    assert_contains "$out" "Failed to replace snippet $SNIP" "reason shown"
+    assert_eq "" "$(ls -A /etc/nginx/snippets | grep '^\.')" "temp file removed"
+}
+
+t_snippet_symlink_left_alone() {
+    custom_snippet
+    rm -f "$SNIP"; echo "# shared" > /etc/victim.conf; ln -s /etc/victim.conf "$SNIP"
+    local out
+    out=$(create_snippets 2>&1 </dev/null)
+    assert_symlink "$SNIP" "symlink kept"
+    assert_eq "# shared" "$(cat /etc/victim.conf)" "link target untouched"
+    assert_contains "$out" "is not a regular file; left unchanged" "reason shown"
+}
+
+# D8: first-run setup refuses an email containing shell syntax, so it never
+# reaches config.conf, and loading the config never runs anything.
+t_first_run_rejects_shell_in_email() {
+    local out
+    out=$(run_app 'lan.example.com\nx$(touch /tmp/pwned)@example.com\nadmin@example.com\nxq\n')
+    assert_contains "$out" "Invalid email" "email with \$(...) rejected"
+    assert_contains "$out" "Initial setup completed" "setup completes with a valid email"
+    assert_contains "$(cat "$MANAGER_DIR/config.conf")" "CERTBOT_EMAIL=admin@example.com" "valid email stored"
+    run_app '2\nq\nq\n' >/dev/null
+    assert_no_file /tmp/pwned "nothing executed"
+}
+
+# D8: config.conf is read as data. Each crafted line makes loading fail
+# safely, and none of them runs a command.
+t_config_is_not_executed() {
+    fixture_configured; load_app
+    local line out rc i=0
+    for line in 'DOMAIN=$(touch /tmp/pwned1)' 'DOMAIN=`touch /tmp/pwned2`' \
+            'CERTBOT_EMAIL=x$(touch /tmp/pwned3)@example.com' 'touch /tmp/pwned4' \
+            'DOMAIN=lan.example.com; touch /tmp/pwned5' 'CERT_NAME="$(touch /tmp/pwned6)"' \
+            'PATH=/tmp/pwned7' 'DOMAIN=lan.example.com && touch /tmp/pwned8'; do
+        ((i++))
+        fixture_configured; echo "$line" >> "$MANAGER_DIR/config.conf"
+        out=$(load_config 2>&1); rc=$?
+        assert_eq 1 "$rc" "rejected: $line"
+        assert_contains "$out" "Invalid config $MANAGER_DIR/config.conf line 6" "line reported: $line"
+    done
+    fixture_configured; echo 'CERTBOT_EMAIL=x$(touch /tmp/pwned9)@example.com' >> "$MANAGER_DIR/config.conf"
+    run_app 'q\n' >/dev/null
+    out=$(run_app '2\n2\n\nq\nq\n')
+    assert_eq "" "$(ls /tmp | grep '^pwned')" "no command ran (load_config, dashboard, TLS manager)"
+    assert_not_called "certbot certonly" "certbot not run with a rejected config"
+}
+
+t_config_parser_reads_supported_format() {
+    fixture_configured; load_app
+    printf '%s\n' '# NGINX Manager config' '' '  # indented comment' \
+        'DOMAIN="lan.example.com"' "CERT_NAME='lan.example.com'" \
+        'CERTBOT_EMAIL=admin@example.com' '  DEFAULT_TLS=both  ' 'SETUP_DONE=true' \
+        > "$MANAGER_DIR/config.conf"
+    load_config; assert_eq 0 $? "loads"
+    assert_eq "lan.example.com|lan.example.com|admin@example.com|both|true" \
+        "$DOMAIN|$CERT_NAME|$CERTBOT_EMAIL|$DEFAULT_TLS|$SETUP_DONE" "values (quotes removed)"
+
+    printf 'DOMAIN=other.example.com\r\nCERT_NAME=\r\n' > "$MANAGER_DIR/config.conf"
+    load_config; assert_eq 0 $? "CRLF file loads"
+    assert_eq "other.example.com||" "$DOMAIN|$CERT_NAME|$CERTBOT_EMAIL" "CR stripped, missing keys empty, nothing stale"
+
+    fixture_configured
+    printf 'DOMAIN=lan.example.com\nSETUP_DONE=true' > "$MANAGER_DIR/config.conf"
+    load_config; assert_eq 0 $? "no final newline"
+    assert_eq true "$SETUP_DONE" "last line read"
+}
+
+t_config_parser_rejects_bad_entries() {
+    fixture_configured; load_app
+    local line out rc
+    for line in 'FOO=bar|unknown setting FOO' 'DOMAIN = x|expected KEY=VALUE' \
+            'export DOMAIN=lan.example.com|expected KEY=VALUE' 'DEFAULT_TLS=ftp|invalid DEFAULT_TLS' \
+            'CERT_NAME=../../etc|invalid CERT_NAME' 'SETUP_DONE=yes|invalid SETUP_DONE' \
+            'DOMAIN="lan.example.com|invalid DOMAIN' 'CERTBOT_EMAIL=nope|invalid CERTBOT_EMAIL'; do
+        printf 'DOMAIN=lan.example.com\nCERT_NAME=lan.example.com\n%s\n' "${line%%|*}" > "$MANAGER_DIR/config.conf"
+        out=$(load_config 2>&1); rc=$?
+        assert_eq 1 "$rc" "rejected: ${line%%|*}"
+        assert_contains "$out" "line 3: ${line#*|}" "reason: ${line%%|*}"
+    done
+    printf 'DOMAIN=lan.example.com\nCERT_NAME=lan.example.com\nFOO=bar\n' > "$MANAGER_DIR/config.conf"
+    load_config >/dev/null 2>&1
+    assert_eq "|" "$DOMAIN|$CERT_NAME" "nothing kept from a rejected config"
+    assert_contains "$(cat /var/log/nginx-manager/manager.log)" "Config rejected: $MANAGER_DIR/config.conf line 3: unknown setting FOO" "rejection logged"
+}
+
+t_validate_email() {
+    fixture_configured; load_app
+    local v
+    for v in admin@example.com first.last+tag@sub.example.org a_b-c@x.io; do
+        validate_email "$v"; assert_eq 0 $? "valid email: $v"
+    done
+    for v in "" nope a@b @example.com 'x$(id)@example.com' 'x`id`@example.com' 'a b@example.com' \
+            'a@example.com;id' 'a@example' "a@example.com
+b"; do
+        validate_email "$v"; assert_eq 1 $? "invalid email: '$v'"
+    done
 }

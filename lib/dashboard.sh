@@ -22,9 +22,12 @@ render_dashboard_status() {
         config_line="${RED}✗ Invalid${NC}"
     fi
 
-    local total enabled
+    # Enabled = has a sites-enabled symlink (the db flag may be stale).
+    local total enabled=0 n
     total=$(jq 'keys | length' "$SITES_DB" 2>/dev/null)
-    enabled=$(jq '[.[] | select(.enabled==true)] | length' "$SITES_DB" 2>/dev/null)
+    while IFS= read -r n; do
+        [[ -L "$NGINX_ENABLED/$n.conf" ]] && ((enabled++))
+    done < <(jq -r 'keys[]' "$SITES_DB" 2>/dev/null)
     sites_line="${enabled:-0} enabled / ${total:-0} total"
 
     cert_line="${GRAY}— Not configured${NC}"

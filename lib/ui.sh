@@ -24,8 +24,22 @@ msg_warning() { echo -e "${YELLOW}! $1${NC}"; }
 msg_error()   { echo -e "${RED}✗ $1${NC}"; }
 msg_step()    { echo -e "${CYAN}→ $1${NC}"; }
 
+# read_input <var> <prompt>  -- read -p into the named variable.
+# Returns 1 at end of input (a last line without a newline still counts as
+# input), so prompt loops can stop instead of re-prompting forever.
+read_input() {
+    read -p "$2" "$1" || [[ -n "${!1}" ]]
+}
+
+# Reports that stdin has closed; the caller then stops its flow.
+input_closed() {
+    echo
+    msg_warning "Input closed - ${1:-cancelled}"
+}
+
 # confirm "question" [default]  -- default is "y" or "n" (default: "n")
-# Returns 0 for yes, 1 for no. Empty input accepts the default.
+# Returns 0 for yes, 1 for no. Empty input accepts the default; end of
+# input is always "no".
 confirm() {
     local question="$1" default="${2:-n}"
     local hint="y/N"
@@ -33,7 +47,10 @@ confirm() {
 
     echo -e -n "${YELLOW}${question} [${hint}]: ${NC}"
     local answer
-    read answer
+    if ! read answer && [[ -z "$answer" ]]; then
+        echo
+        return 1
+    fi
     answer="${answer:-$default}"
     [[ "$answer" =~ ^[Yy]$ ]]
 }

@@ -104,20 +104,128 @@ t_regeneration_backs_up_previous_config() {
     assert_contains "$(cat /var/log/nginx-manager/manager.log)" "Backup created: $SITES_AVAILABLE/app.conf" "backup logged"
 }
 
+no_temp_files() { ls -A "$SITES_AVAILABLE" | grep '^\.'; }
+
+# D5: the new config is generated in a temp file next to the target and
+# renamed over it, so the target is never seen half-written.
+t_generate_replaces_atomically() {
+    fixture_configured; load_app
+    new_site app http; chmod 640 "$SITES_AVAILABLE/app.conf"
+    local inode
+    inode=$(stat -c %i "$SITES_AVAILABLE/app.conf")
+    db_save app app.lan.example.com 127.0.0.1:9090 http false >/dev/null
+    generate_site app >/dev/null 2>&1
+    assert_eq 0 $? "returns 0"
+    assert_contains "$(cat "$SITES_AVAILABLE/app.conf")" "proxy_pass http://127.0.0.1:9090;" "new config in place"
+    [[ "$(stat -c %i "$SITES_AVAILABLE/app.conf")" != "$inode" ]] \
+        && pass "replaced by rename, not rewritten in place" || fail "replaced by rename, not rewritten in place"
+    assert_mode "$SITES_AVAILABLE/app.conf" 640 "mode kept"
+    assert_eq "" "$(no_temp_files)" "no temp files left"
+    new_site web http
+    assert_mode "$SITES_AVAILABLE/web.conf" 644 "new config is 644"
+}
+
+# D5: a write that fails part-way must not touch the existing config.
+t_generate_write_failure_keeps_original() {
+    fixture_configured; load_app
+    new_site app http
+    local original rc
+    original=$(cat "$SITES_AVAILABLE/app.conf")
+    db_save app app.lan.example.com 127.0.0.1:9090 http false >/dev/null
+    cat() { return 1; }
+    generate_site app >/dev/null 2>&1; rc=$?
+    unset -f cat
+    assert_eq 1 "$rc" "returns 1"
+    assert_eq "$original" "$(cat "$SITES_AVAILABLE/app.conf")" "existing config intact"
+    assert_eq "" "$(no_temp_files)" "temp file removed"
+}
+
+t_generate_replace_failure_keeps_original() {
+    fixture_configured; load_app
+    new_site app http
+    local original out rc
+    original=$(cat "$SITES_AVAILABLE/app.conf")
+    db_save app app.lan.example.com 127.0.0.1:9090 http false >/dev/null
+    mv() { return 1; }
+    out=$(generate_site app 2>&1); rc=$?
+    unset -f mv
+    assert_eq 1 "$rc" "returns 1"
+    assert_contains "$out" "Failed to write configuration $SITES_AVAILABLE/app.conf" "reason shown"
+    assert_eq "$original" "$(cat "$SITES_AVAILABLE/app.conf")" "existing config intact"
+    assert_eq "" "$(no_temp_files)" "temp file removed"
+}
+
+# D5: without a backup there is no way back, so nothing is replaced.
+t_generate_backup_failure_keeps_original() {
+    fixture_configured; load_app
+    new_site app http
+    local original out rc
+    original=$(cat "$SITES_AVAILABLE/app.conf")
+    db_save app app.lan.example.com 127.0.0.1:9090 http false >/dev/null
+    rm -rf "$MANAGER_DIR/backups"; touch "$MANAGER_DIR/backups"
+    out=$(generate_site app 2>&1); rc=$?
+    assert_eq 1 "$rc" "returns 1"
+    assert_contains "$out" "Failed to create backup" "reason shown"
+    assert_eq "$original" "$(cat "$SITES_AVAILABLE/app.conf")" "existing config intact"
+    assert_eq "" "$(no_temp_files)" "temp file removed"
+}
+
+t_generate_refuses_non_regular_target() {
+    fixture_configured; load_app
+    echo keep > /etc/victim.conf
+    db_save app app.lan.example.com 127.0.0.1:8080 http false >/dev/null
+    ln -s /etc/victim.conf "$SITES_AVAILABLE/app.conf"
+    local out rc
+    out=$(generate_site app 2>&1); rc=$?
+    assert_eq 1 "$rc" "returns 1"
+    assert_contains "$out" "is not a regular file" "reason shown"
+    assert_symlink "$SITES_AVAILABLE/app.conf" "symlink kept"
+    assert_eq keep "$(cat /etc/victim.conf)" "link target untouched"
+}
+
 t_new_site_creates_no_backup() {
     fixture_configured; load_app
     new_site app http
     assert_eq "" "$(ls "$MANAGER_DIR/backups")" "no backup when nothing was overwritten"
 }
 
-t_backup_same_second_collision() {
-    known_defect "D12: backups of the same file within one second overwrite each other"
+# D12: backups made within the same second all survive: the first keeps the
+# <file>_<epoch>.bak name, later ones get a _<n> suffix.
+t_backup_same_second_no_collision() {
     fixture_configured; load_app
     date() { if [[ "$1" == "+%s" ]]; then echo 1700000000; else command date "$@"; fi; }
-    echo one > /tmp/f.conf; backup_file /tmp/f.conf
-    echo two > /tmp/f.conf; backup_file /tmp/f.conf
-    assert_eq 1 "$(ls "$MANAGER_DIR/backups" | wc -l)" "only one backup file survives"
-    assert_eq two "$(cat "$MANAGER_DIR/backups/f.conf_1700000000.bak")" "earlier backup lost"
+    local b="$MANAGER_DIR/backups/f.conf_1700000000" i
+    for i in one two three; do echo "$i" > /tmp/f.conf; backup_file /tmp/f.conf; done
+    assert_eq 3 "$(ls "$MANAGER_DIR/backups" | wc -l)" "three backups kept"
+    assert_eq one "$(cat "$b.bak")" "first backup intact"
+    assert_eq two "$(cat "${b}_1.bak")" "second backup intact"
+    assert_eq three "$(cat "${b}_2.bak")" "third backup intact"
+    assert_eq "${b}_2.bak" "$LAST_BACKUP" "LAST_BACKUP names the newest"
+    rm -f /tmp/f.conf
+}
+
+t_backup_rapid_real_clock() {
+    fixture_configured; load_app
+    local i
+    for i in 1 2 3 4 5 6; do echo "v$i" > /tmp/f.conf; backup_file /tmp/f.conf; done
+    assert_eq 6 "$(ls "$MANAGER_DIR/backups" | wc -l)" "six quick backups kept"
+    assert_eq "v1 v2 v3 v4 v5 v6" "$(cat "$MANAGER_DIR"/backups/* | sort | tr '\n' ' ' | sed 's/ $//')" "every version present"
+    rm -f /tmp/f.conf
+}
+
+# D12: whatever already sits at a candidate name is never overwritten.
+t_backup_never_overwrites_existing() {
+    fixture_configured; load_app
+    date() { if [[ "$1" == "+%s" ]]; then echo 1700000000; else command date "$@"; fi; }
+    local b="$MANAGER_DIR/backups/f.conf_1700000000"
+    echo precious > "$b.bak"; echo precious1 > "${b}_1.bak"
+    echo new > /tmp/f.conf; chmod 640 /tmp/f.conf
+    backup_file /tmp/f.conf
+    assert_eq 0 $? "returns 0"
+    assert_eq precious "$(cat "$b.bak")" "existing backup kept"
+    assert_eq precious1 "$(cat "${b}_1.bak")" "existing suffixed backup kept"
+    assert_eq new "$(cat "${b}_2.bak")" "new backup under the next free name"
+    assert_mode "${b}_2.bak" 640 "backup keeps the file's mode"
     rm -f /tmp/f.conf
 }
 

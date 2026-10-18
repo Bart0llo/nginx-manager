@@ -25,7 +25,7 @@ main_menu() {
         echo
 
         local choice
-        read -p "Select: " choice
+        read_input choice "Select: " || { input_closed "exiting"; exit 1; }
         choice="${choice,,}"
 
         case "$choice" in

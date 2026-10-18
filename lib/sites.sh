@@ -92,7 +92,7 @@ sites_menu() {
         echo
 
         local choice
-        read -p "Select # or action: " choice
+        read_input choice "Select # or action: " || return
         choice="${choice,,}"
 
         if [[ -z "$choice" || "$choice" == "q" ]]; then
@@ -236,7 +236,7 @@ add_site() {
 
     local name
     while true; do
-        read -p "Site name: " name
+        read_input name "Site name: " || { input_closed; return 1; }
         if ! validate_name "$name"; then
             msg_error "Invalid name (letters, numbers, - and _ only)"
             continue
@@ -250,14 +250,14 @@ add_site() {
 
     local domain
     while true; do
-        read -p "Domain: " domain
+        read_input domain "Domain: " || { input_closed; return 1; }
         validate_domain "$domain" && break
         msg_error "Invalid domain"
     done
 
     local backend
     while true; do
-        read -p "Backend (ip:port): " backend
+        read_input backend "Backend (ip:port): " || { input_closed; return 1; }
         validate_backend "$backend" && break
         msg_error "Invalid backend (expected host:port, 1-65535)"
     done
@@ -271,7 +271,7 @@ add_site() {
 
     local tls mode
     while true; do
-        read -p "Select [1-3]: " mode
+        read_input mode "Select [1-3]: " || { input_closed; return 1; }
         case "$mode" in
             1) tls="http"; break ;;
             2) tls="https"; break ;;
@@ -312,7 +312,7 @@ edit_site() {
 
     local input
     while true; do
-        read -p "Domain [$domain]: " input
+        read_input input "Domain [$domain]: " || { input_closed; return 1; }
         input="${input:-$domain}"
         if validate_domain "$input"; then
             domain="$input"
@@ -322,7 +322,7 @@ edit_site() {
     done
 
     while true; do
-        read -p "Backend [$backend]: " input
+        read_input input "Backend [$backend]: " || { input_closed; return 1; }
         input="${input:-$backend}"
         if validate_backend "$input"; then
             backend="$input"
@@ -347,7 +347,7 @@ edit_site() {
 
     local mode
     while true; do
-        read -p "Select [$default_mode]: " mode
+        read_input mode "Select [$default_mode]: " || { input_closed; return 1; }
         mode="${mode:-$default_mode}"
         case "$mode" in
             1) tls="http"; break ;;
@@ -397,16 +397,21 @@ delete_site() {
     echo
     site_delete "$name"
     pause
-    return 0
+    # Returns 0 (leave the site's screens) only if the site is really gone.
+    ! db_exists "$name"
 }
 
 site_toggle() {
     local name="$1"
-    local result state
+    local result
 
-    state=$(db_get "$name" enabled)
+    # Act on what nginx actually has, not on a possibly stale db flag.
+    if ! sync_enabled_state "$name"; then
+        pause
+        return 1
+    fi
 
-    if [[ "$state" == "true" ]]; then
+    if [[ -L "$NGINX_ENABLED/$name.conf" ]]; then
         confirm "Disable site '$name'?" y || return 1
         echo
         disable_site "$name"

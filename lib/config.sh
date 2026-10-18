@@ -32,12 +32,61 @@ EOF
     fi
 }
 
+# Reads config.conf as data - it is never executed. Format, one per line:
+#   KEY=VALUE        KEY is DOMAIN, CERT_NAME, CERTBOT_EMAIL, DEFAULT_TLS
+#                    or SETUP_DONE; VALUE may be empty, or wrapped in one
+#                    pair of '...' or "..." (taken literally, no escapes);
+#                    whitespace around the line is ignored
+#   # comment        blank lines and lines starting with # are skipped
+# Anything else (unknown keys, "export", spaces around "=", shell syntax,
+# invalid values) rejects the whole file: the variables are cleared and
+# load_config returns 1 with the offending line number.
 load_config() {
+    DOMAIN="" CERT_NAME="" CERTBOT_EMAIL="" DEFAULT_TLS="" SETUP_DONE=""
     if [[ ! -f "$CONFIG_FILE" ]]; then
         echo -e "${RED}Missing config: $CONFIG_FILE${NC}"
         return 1
     fi
-    source "$CONFIG_FILE"
+
+    local line key value error n=0
+    local -A conf=()
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        ((n++))
+        line="${line%$'\r'}"
+        [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+
+        if [[ ! "$line" =~ ^[[:space:]]*([A-Z_]+)=(.*[^[:space:]])?[[:space:]]*$ ]]; then
+            error="expected KEY=VALUE"
+            break
+        fi
+        key="${BASH_REMATCH[1]}" value="${BASH_REMATCH[2]}"
+        if [[ "$value" =~ ^\"([^\"]*)\"$ || "$value" =~ ^\'([^\']*)\'$ ]]; then
+            value="${BASH_REMATCH[1]}"
+        fi
+
+        case "$key" in
+            DOMAIN) [[ -z "$value" ]] || validate_domain "$value" || error="invalid DOMAIN" ;;
+            CERT_NAME) [[ -z "$value" || "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || error="invalid CERT_NAME" ;;
+            CERTBOT_EMAIL) [[ -z "$value" ]] || validate_email "$value" || error="invalid CERTBOT_EMAIL" ;;
+            DEFAULT_TLS) [[ -z "$value" ]] || validate_tls "$value" || error="invalid DEFAULT_TLS" ;;
+            SETUP_DONE) [[ -z "$value" || "$value" == true || "$value" == false ]] || error="invalid SETUP_DONE" ;;
+            *) error="unknown setting $key" ;;
+        esac
+        [[ -n "$error" ]] && break
+        conf[$key]="$value"
+    done < "$CONFIG_FILE"
+
+    if [[ -n "$error" ]]; then
+        msg_error "Invalid config $CONFIG_FILE line $n: $error"
+        log "Config rejected: $CONFIG_FILE line $n: $error"
+        return 1
+    fi
+
+    DOMAIN="${conf[DOMAIN]}"
+    CERT_NAME="${conf[CERT_NAME]}"
+    CERTBOT_EMAIL="${conf[CERTBOT_EMAIL]}"
+    DEFAULT_TLS="${conf[DEFAULT_TLS]}"
+    SETUP_DONE="${conf[SETUP_DONE]}"
 }
 
 first_run_setup() {
@@ -53,15 +102,15 @@ first_run_setup() {
 
     local domain
     while true; do
-        read -p "Base domain (example: lan.example.com): " domain
+        read_input domain "Base domain (example: lan.example.com): " || { input_closed "setup not completed"; return 1; }
         validate_domain "$domain" && break
         msg_error "Invalid domain"
     done
 
     local email
     while true; do
-        read -p "Certbot email: " email
-        [[ "$email" =~ ^.+@.+\..+$ ]] && break
+        read_input email "Certbot email: " || { input_closed "setup not completed"; return 1; }
+        validate_email "$email" && break
         msg_error "Invalid email"
     done
 

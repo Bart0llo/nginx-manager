@@ -56,7 +56,7 @@ main() {
 
     # Init
     create_default_config
-    first_run_setup
+    first_run_setup || exit 1
     create_database
     create_snippets
 

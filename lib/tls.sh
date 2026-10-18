@@ -63,7 +63,10 @@ create_cloudflare_token() {
 
     local token
     while true; do
-        read -rsp "Token: " token
+        if ! read -rsp "Token: " token && [[ -z "$token" ]]; then
+            input_closed
+            return
+        fi
         echo
 
         if [[ -z "$token" ]]; then
@@ -139,6 +142,11 @@ create_certificate() {
     fi
 
     [[ -z "$CERTBOT_EMAIL" ]] && read -p "Email: " CERTBOT_EMAIL
+    if ! validate_email "$CERTBOT_EMAIL"; then
+        msg_error "Invalid email"
+        pause
+        return 1
+    fi
 
     echo
     msg_step "Requesting certificate for *.$DOMAIN and $DOMAIN..."
@@ -148,14 +156,17 @@ create_certificate() {
         --dns-cloudflare-propagation-seconds 30 \
         --cert-name "$CERT_NAME" \
         -d "*.$DOMAIN" -d "$DOMAIN" --agree-tos --non-interactive -m "$CERTBOT_EMAIL"
+    local rc=$?
 
     echo
-    if [[ $? -eq 0 ]]; then
+    if [[ $rc -eq 0 ]]; then
         msg_success "Certificate created"
         log "Certificate created for $DOMAIN (cert-name: $CERT_NAME)"
     else
-        msg_error "Certificate request failed"
-        log "Certificate creation failed for $DOMAIN"
+        msg_error "Certificate request failed (certbot exit $rc)"
+        log "Certificate creation failed for $DOMAIN (certbot exit $rc)"
+        pause
+        return 1
     fi
     pause
 }

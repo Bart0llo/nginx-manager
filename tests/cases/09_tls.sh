@@ -59,15 +59,39 @@ t_create_certificate_prompts_for_missing_email() {
     assert_called "-m me@example.org" "prompted email used"
 }
 
-t_create_certificate_failure_reported_as_success() {
-    known_defect "D1: certbot failure reported as 'Certificate created'"
+# D8: the email typed at the prompt is validated before certbot sees it.
+t_create_certificate_rejects_invalid_email() {
+    fixture_configured; fixture_cloudflare
+    sed -i 's/^CERTBOT_EMAIL=.*/CERTBOT_EMAIL=/' "$MANAGER_DIR/config.conf"
+    load_app
+    local out rc
+    out=$(create_certificate <<< $'x$(touch /tmp/pwned)@example.com\n\n' 2>&1); rc=$?
+    assert_eq 1 "$rc" "returns 1"
+    assert_contains "$out" "Invalid email" "reason shown"
+    assert_not_called "certbot certonly" "certbot not run"
+    assert_no_file /tmp/pwned "nothing executed"
+}
+
+t_create_certificate_failure_reported() {
     fixture_configured; fixture_cloudflare; load_app
-    mock_rc certbot 1
-    local out
-    out=$(create_certificate <<< $'\n' 2>&1)
-    assert_contains "$out" "Certificate created" "success claimed"
-    assert_not_contains "$out" "Certificate request failed" "failure not shown"
-    assert_contains "$(cat /var/log/nginx-manager/manager.log)" "Certificate created for lan.example.com" "success logged"
+    # certbot that fails with its own diagnostics on stderr (D1).
+    cat > "$MOCK_BIN/certbot" <<'EOF'
+#!/bin/bash
+echo "certbot $*" >> /tmp/mock-calls.log
+echo "An unexpected error occurred: DNS problem" >&2
+exit 1
+EOF
+    local out rc
+    out=$(create_certificate <<< $'\n' 2>&1); rc=$?
+    assert_called "certbot certonly" "certbot invoked"
+    assert_not_contains "$out" "Certificate created" "no success claimed"
+    assert_contains "$out" "Certificate request failed (certbot exit 1)" "failure reported"
+    assert_contains "$out" "An unexpected error occurred: DNS problem" "certbot error output kept"
+    assert_eq 1 "$rc" "nonzero return"
+    local logf
+    logf=$(cat /var/log/nginx-manager/manager.log)
+    assert_not_contains "$logf" "Certificate created" "success not logged"
+    assert_contains "$logf" "Certificate creation failed for lan.example.com (certbot exit 1)" "failure logged"
 }
 
 t_create_certificate_preconditions() {

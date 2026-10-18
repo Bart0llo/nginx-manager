@@ -43,6 +43,42 @@ t_regenerate_invalid_rolls_back() {
     nginx -t >/dev/null 2>&1; assert_eq 0 $? "nginx valid after rollback"
 }
 
+# D5: the rollback puts the backup back with a rename as well, keeping
+# the file mode, and leaves no temp files behind.
+t_regenerate_rollback_restores_atomically() {
+    fixture_configured; load_app
+    new_site app http; enable_site app >/dev/null 2>&1; chmod 640 "$SITES_AVAILABLE/app.conf"
+    local original
+    original=$(cat "$SITES_AVAILABLE/app.conf")
+    db_save app app.lan.example.com "$BAD_BACKEND" http true >/dev/null
+    cp() { [[ "$2" == "$SITES_AVAILABLE/app.conf" ]] && { echo "in-place copy" >&2; return 1; }; command cp "$@"; }
+    regenerate_site_safe app >/dev/null 2>&1
+    unset -f cp
+    assert_eq "$original" "$(cat "$SITES_AVAILABLE/app.conf")" "previous config restored"
+    assert_mode "$SITES_AVAILABLE/app.conf" 640 "mode kept"
+    assert_eq "" "$(ls -A "$SITES_AVAILABLE" | grep '^\.')" "no temp files left"
+    nginx -t >/dev/null 2>&1; assert_eq 0 $? "nginx valid after rollback"
+}
+
+# D5 review: if the backup cannot be put back, say so - the invalid new
+# config is still on disk - and do not reload.
+t_regenerate_restore_failure_reported() {
+    fixture_configured; load_app
+    new_site app http; enable_site app >/dev/null 2>&1
+    db_save app app.lan.example.com "$BAD_BACKEND" http true >/dev/null; : > "$MOCK_LOG"
+    # generate_site's own mktemp runs before the backup; fail only the restore's.
+    mktemp() { [[ -n "$LAST_BACKUP" ]] && return 1; command mktemp "$@"; }
+    local out rc
+    out=$(regenerate_site_safe app 2>&1); rc=$?
+    unset -f mktemp
+    assert_eq 1 "$rc" "returns 1"
+    assert_contains "$out" "Failed to restore $SITES_AVAILABLE/app.conf" "restore failure reported"
+    assert_contains "$out" "invalid new configuration is still in $SITES_AVAILABLE/app.conf" "remaining state explained"
+    assert_not_contains "$out" "Previous configuration restored" "no restore claimed"
+    assert_not_called "systemctl reload" "no reload"
+    assert_contains "$(cat /var/log/nginx-manager/manager.log)" "Restore FAILED" "logged"
+}
+
 t_regenerate_invalid_without_backup() {
     fixture_configured; load_app
     db_save app app.lan.example.com "$BAD_BACKEND" http true >/dev/null
@@ -64,6 +100,24 @@ t_regenerate_generation_failure_keeps_file() {
     assert_contains "$out" "[app] Configuration generation failed" "failure reported"
     assert_eq "$original" "$(cat "$SITES_AVAILABLE/app.conf")" "existing config untouched"
     assert_not_called "systemctl reload" "no reload"
+}
+
+# D2: a valid regenerated config whose reload fails is not "reloaded".
+t_regenerate_reload_failure_reported() {
+    fixture_configured; load_app
+    new_site app http; enable_site app >/dev/null 2>&1
+    db_save app app.lan.example.com 127.0.0.1:9999 http true >/dev/null
+    mock_rc systemctl-reload 1
+    local out rc
+    out=$(regenerate_site_safe app 2>&1); rc=$?
+    assert_eq 3 "$rc" "returns 3 (config in place, reload failed)"
+    assert_contains "$out" "Nginx reload failed (systemctl exit 1)" "failure reported"
+    assert_not_contains "$out" "Nginx reloaded" "no reload claimed"
+    assert_contains "$(cat "$SITES_AVAILABLE/app.conf")" "proxy_pass http://127.0.0.1:9999;" "valid new config kept"
+    assert_not_contains "$(cat /var/log/nginx-manager/manager.log)" "Regenerated and reloaded: app" "success not logged"
+    out=$(regenerate_config app <<< $'y\n\n' 2>&1)
+    assert_not_contains "$out" "The new configuration was rejected." "not described as rejected"
+    assert_contains "$out" "nginx was not reloaded" "menu explains the result"
 }
 
 t_regenerate_all_reports_partial() {

@@ -136,16 +136,22 @@ t_delete_requires_exact_name() {
     assert_db 'has("app")' "db kept"
 }
 
-t_delete_proceeds_without_backup() {
-    known_defect "D9: delete continues after a failed backup and reports success"
+# D9: no backup, no delete - config, symlink and db entry all stay.
+t_delete_aborts_when_backup_fails() {
     fixture_configured
-    seed "new_site app http"
+    seed "new_site app http; enable_site app"
     rm -rf "$MANAGER_DIR/backups"; touch "$MANAGER_DIR/backups"
-    local out
+    local original before out
+    original=$(cat "$SITES_AVAILABLE/app.conf")
+    before=$(cat "$MANAGER_DIR/sites.json")
     out=$(run_app '1\nd\n1\napp\n\nq\nq\n')
     assert_contains "$out" "Failed to create backup" "backup failure shown"
-    assert_no_file "$SITES_AVAILABLE/app.conf" "config deleted anyway"
-    assert_contains "$out" "Site 'app' deleted" "reported as deleted"
+    assert_contains "$out" "Site 'app' was NOT deleted: its configuration could not be backed up" "abort reported"
+    assert_not_contains "$out" "Site 'app' deleted" "not reported as deleted"
+    assert_eq "$original" "$(cat "$SITES_AVAILABLE/app.conf")" "config intact"
+    assert_symlink "$SITES_ENABLED/app.conf" "symlink intact"
+    assert_eq "$before" "$(cat "$MANAGER_DIR/sites.json")" "db entry intact"
+    assert_not_called "systemctl reload" "no reload"
 }
 
 t_toggle_from_list() {
@@ -194,23 +200,56 @@ t_invalid_menu_input() {
     assert_contains "$out" "Invalid selection" "out-of-range selection"
 }
 
-t_toggle_uses_db_not_symlink() {
-    known_defect "D6: toggle reads the db flag; list/details read the symlink"
+# D6: the sites-enabled symlink decides whether a site is enabled; a stale
+# db flag is corrected (and logged), never acted on.
+t_toggle_follows_symlink_db_says_disabled() {
     fixture_configured
     seed "new_site app http; enable_site app; db_update_enabled app false"
     local out
-    out=$(run_app '1\nt\n1\nn\n\nq\nq\n')
+    out=$(run_app '1\nt\n1\n\n\nq\nq\n')
     assert_contains "$out" "● ENABLED" "list shows the site enabled"
-    assert_contains "$out" "Enable site 'app'?" "toggle offers to enable it"
+    assert_contains "$out" "Disable site 'app'? [Y/n]" "toggle offers to disable the live site"
+    assert_not_contains "$out" "Enable site 'app'?" "does not offer to enable it"
+    assert_no_symlink "$SITES_ENABLED/app.conf" "disabled"
+    assert_db '.app.enabled == false' "db matches"
+    assert_contains "$(cat /var/log/nginx-manager/manager.log)" "State corrected for app: db enabled=false, symlink says true" "correction logged"
 }
 
-t_edit_skips_validation_when_db_stale() {
-    known_defect "D6: edit trusts a stale db flag and changes a live config without nginx -t"
+t_toggle_follows_symlink_db_says_enabled() {
+    fixture_configured
+    seed "new_site app http; db_update_enabled app true"
+    local out
+    out=$(run_app '1\nt\n1\nn\n\nq\nq\n')
+    assert_contains "$out" "○ DISABLED" "list shows the site disabled"
+    assert_contains "$out" "Enable site 'app'? [Y/n]" "toggle offers to enable it"
+    assert_no_symlink "$SITES_ENABLED/app.conf" "declining changes nothing on disk"
+    assert_db '.app.enabled == false' "stale db flag corrected"
+    assert_contains "$(cat /var/log/nginx-manager/manager.log)" "State corrected for app: db enabled=true, symlink says false" "correction logged"
+}
+
+# D6: editing a live site whose db flag says disabled must still validate
+# with nginx -t and roll back an invalid config.
+t_edit_validates_live_site_with_stale_db() {
     fixture_configured
     seed "new_site app http; enable_site app; db_update_enabled app false"
-    local out
+    local original out
+    original=$(cat "$SITES_AVAILABLE/app.conf")
     out=$(run_app "1\ne\n1\n\n$BAD_BACKEND\n\n\nq\nq\n")
+    assert_not_contains "$out" "Site updated (disabled, not reloaded)" "not treated as disabled"
+    assert_contains "$out" "New configuration invalid" "validated with nginx -t"
+    assert_eq "$original" "$(cat "$SITES_AVAILABLE/app.conf")" "previous config restored"
+    assert_symlink "$SITES_ENABLED/app.conf" "still enabled"
+    nginx -t >/dev/null 2>&1; assert_eq 0 $? "live nginx config left valid"
+    assert_db '.app.enabled == true and .app.backend == "127.0.0.1:8080"' "db restored and matches the symlink"
+}
+
+t_edit_disabled_site_with_stale_db() {
+    fixture_configured
+    seed "new_site app http; db_update_enabled app true"
+    local out
+    out=$(run_app '1\ne\n1\n\n127.0.0.1:9090\n\n\nq\nq\n')
     assert_contains "$out" "Site updated (disabled, not reloaded)" "treated as disabled"
-    assert_symlink "$SITES_ENABLED/app.conf" "but it is live"
-    nginx -t >/dev/null 2>&1; assert_eq 1 $? "live nginx config left invalid"
+    assert_no_symlink "$SITES_ENABLED/app.conf" "edit does not enable"
+    assert_not_called "systemctl reload" "no reload"
+    assert_db '.app.enabled == false and .app.backend == "127.0.0.1:9090"' "db updated and matches the symlink"
 }

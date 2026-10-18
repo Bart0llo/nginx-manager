@@ -51,13 +51,15 @@ db_write() {
     mv "$tmp" "$SITES_DB"
 }
 
+# Creates or updates a site. An existing entry keeps its "created" time and
+# any fields this version does not know about (e.g. plugin-owned data).
 db_save() {
     local name="$1" domain="$2" backend="$3" tls="$4" enabled="$5"
     db_write db_save "$name" \
         --arg name "$name" --arg domain "$domain" --arg backend "$backend" \
         --arg tls "$tls" --arg enabled "$enabled" '
-        .[$name]={domain:$domain,backend:$backend,tls:$tls,
-        enabled:($enabled=="true"),created:(now|todate)}'
+        .[$name]=((.[$name] // {}) + {domain:$domain,backend:$backend,tls:$tls,
+        enabled:($enabled=="true")} | .created //= (now|todate))'
 }
 
 db_update_enabled() {

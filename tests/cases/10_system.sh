@@ -36,16 +36,19 @@ t_system_check_problems() {
 
 t_dashboard_counts() {
     fixture_configured; fixture_sites_v3
+    seed "generate_site app; ln -s $SITES_AVAILABLE/app.conf $SITES_ENABLED/app.conf"
     local out
     out=$(run_app 'q\n')
     assert_contains "$out" "Sites          1 enabled / 2 total" "counts from v3 fixture"
 }
 
-t_dashboard_counts_db_flag() {
-    known_defect "D6: dashboard counts the db flag, not the live symlink"
+# D6: the dashboard counts live symlinks, whatever the db flags say.
+t_dashboard_counts_live_symlinks() {
     fixture_configured
-    seed "new_site app http; enable_site app; db_update_enabled app false"
-    assert_contains "$(run_app 'q\n')" "Sites          0 enabled / 1 total" "live site counted as disabled"
+    seed "new_site a http; enable_site a; db_update_enabled a false
+          new_site b http; enable_site b; db_update_enabled b false
+          new_site c http; db_update_enabled c true"
+    assert_contains "$(run_app 'q\n')" "Sites          2 enabled / 3 total" "live sites counted, stale flags ignored"
 }
 
 t_show_backups() {

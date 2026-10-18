@@ -10,6 +10,8 @@
 validate_name() { [[ "$1" =~ ^[a-zA-Z0-9_-]+$ ]]; }
 validate_domain() { [[ "$1" =~ ^([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}$ ]]; }
 validate_tls() { [[ "$1" == "http" || "$1" == "https" || "$1" == "both" ]]; }
+# Plain local@domain.tld: no quotes, spaces or shell metacharacters.
+validate_email() { [[ "$1" =~ ^[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+\.)+[A-Za-z]{2,}$ ]]; }
 
 validate_backend() {
     [[ "$1" =~ ^([a-zA-Z0-9.-]+):([0-9]+)$ ]] || return 1
