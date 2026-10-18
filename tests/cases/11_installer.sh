@@ -270,13 +270,44 @@ t_release_installer_knows_repo() {
     assert_eq 0 "$rc" "release install.sh needs no --repo"
     assert_contains "$out" "Downloaded release v4.0.0 of $REPO" "uses its own repository"
 
-    out=$(run_installer); rc=$?
-    assert_eq 1 "$rc" "checkout install.sh without a repository: exits 1"
+    out=$(run_installer --repo ""); rc=$?
+    assert_eq 1 "$rc" "empty --repo: exits 1"
     assert_contains "$out" "no repository configured" "reason shown"
     out=$(run_installer --repo "not a repo"); rc=$?
     assert_contains "$out" "--repo must be OWNER/NAME" "malformed --repo rejected"
     out=$(run_installer --repo "$REPO"); rc=$?
     assert_eq 0 "$rc" "--repo works"
+}
+
+# Without --repo or NM_REPO, install.sh from a checkout uses the public
+# repository; --repo beats NM_REPO, which beats the built-in default.
+t_default_repository() {
+    local default=Bart0llo/nginx-manager out rc
+    with_release
+    unset NM_REPO
+    (API=/tmp/mock-gh/api/repos/$default/releases DL=/tmp/mock-gh/web/$default/releases/download
+        serve v4.0.0 "$REL/v4.0.0" latest)
+
+    out=$(run_installer --check); rc=$?
+    assert_eq 0 "$rc" "no repository given: --check exits 0"
+    assert_contains "$out" "Latest release of $default: v4.0.0" "default repository used"
+    out=$(NM_REPO="" run_installer --check)
+    assert_contains "$out" "Latest release of $default: v4.0.0" "empty NM_REPO: default used"
+    out=$(NM_REPO="$REPO" run_installer --check)
+    assert_contains "$out" "Latest release of $REPO: v4.0.0" "NM_REPO overrides the default"
+    out=$(run_installer --check --repo "$REPO")
+    assert_contains "$out" "Latest release of $REPO: v4.0.0" "--repo overrides the default"
+    out=$(NM_REPO=acme/other run_installer --check --repo "$REPO")
+    assert_contains "$out" "Latest release of $REPO: v4.0.0" "--repo overrides NM_REPO"
+    out=$(NM_REPO="$default" INSTALLER="$REL/v4.0.0/install.sh" run_installer --check)
+    assert_contains "$out" "Latest release of $default: v4.0.0" "NM_REPO overrides a release's own repository"
+    out=$(run_installer --help)
+    assert_contains "$out" "Release of $default over HTTPS" "help names the default"
+
+    out=$(run_installer); rc=$?
+    assert_eq 0 "$rc" "install from the default repository exits 0"
+    assert_contains "$out" "Downloaded release v4.0.0 of $default" "downloaded from the default repository"
+    same_file "$REL/v4.0.0/nginx-site.sh" "$TARGET" "release installed"
 }
 
 t_check() {

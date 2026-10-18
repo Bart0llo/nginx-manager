@@ -18,7 +18,8 @@ Bash CLI for managing NGINX reverse proxy sites on Debian and Ubuntu.
 ## Installation
 
 NGINX Manager Pro is published as GitHub Releases of its public
-repository, written `OWNER/REPO` below. Each release has three files:
+repository, [`Bart0llo/nginx-manager`](https://github.com/Bart0llo/nginx-manager).
+Each release has three files:
 
 | Asset           | Contents                                              |
 |-----------------|-------------------------------------------------------|
@@ -32,7 +33,7 @@ downloaded anonymously over HTTPS. Git is not needed either.
 Download the installer of the latest release, read it, and run it:
 
 ```bash
-curl -fsSLO https://github.com/OWNER/REPO/releases/latest/download/install.sh
+curl -fsSLO https://github.com/Bart0llo/nginx-manager/releases/latest/download/install.sh
 less install.sh
 sudo bash install.sh
 ```
@@ -42,8 +43,8 @@ It downloads `nginx-site.sh` and `SHA256SUMS` of the latest release
 without reading it first:
 
 ```bash
-curl -fsSL https://github.com/OWNER/REPO/releases/latest/download/install.sh | sudo bash
-curl -fsSL https://github.com/OWNER/REPO/releases/latest/download/install.sh | sudo bash -s -- --with-certbot
+curl -fsSL https://github.com/Bart0llo/nginx-manager/releases/latest/download/install.sh | sudo bash
+curl -fsSL https://github.com/Bart0llo/nginx-manager/releases/latest/download/install.sh | sudo bash -s -- --with-certbot
 ```
 
 On a server without internet access, download the three files elsewhere
@@ -54,8 +55,9 @@ sha256sum -c SHA256SUMS
 sudo bash install.sh --bundle nginx-site.sh --sha256sums SHA256SUMS
 ```
 
-`install.sh` from a release already knows its repository. A copy from a
-checkout needs `--repo OWNER/REPO` (or `NM_REPO`).
+`install.sh` from a release already knows its repository; a copy from a
+checkout uses `Bart0llo/nginx-manager`. `--repo OWNER/NAME` (or
+`NM_REPO`) downloads from another repository, such as a fork.
 
 ### What the installer does
 
@@ -140,7 +142,7 @@ Then install it the same way as a fresh installation. Use the
 `install.sh` of the new release:
 
 ```bash
-curl -fsSLO https://github.com/OWNER/REPO/releases/latest/download/install.sh
+curl -fsSLO https://github.com/Bart0llo/nginx-manager/releases/latest/download/install.sh
 sudo bash install.sh
 ```
 
@@ -317,10 +319,11 @@ git push origin v4.0.0
 `.github/workflows/release.yml` runs only for tags of the form
 `vMAJOR.MINOR.PATCH`. It runs both test suites, builds the assets with
 `tools/release.sh` (which stamps the version into `nginx-site.sh` and the
-repository into `install.sh`), and publishes `nginx-site.sh`, `install.sh`
-and `SHA256SUMS` as a GitHub Release. It never overwrites an existing
+repository the workflow runs in into `install.sh`), and publishes
+`nginx-site.sh`, `install.sh` and `SHA256SUMS` as a GitHub Release of that
+repository. It never overwrites an existing
 release. The tests run with read-only access to the repository; only the
-publish job may create the release, and it uses no repository secrets. `bash tools/release.sh v4.0.0 OWNER/REPO` builds the same files
+publish job may create the release, and it uses no repository secrets. `bash tools/release.sh v4.0.0 Bart0llo/nginx-manager` builds the same files
 locally in `dist/release/`.
 
 ## Uninstall

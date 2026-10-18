@@ -27,8 +27,8 @@ mkdir -p "$out"
 
 bash "$root/tools/bundle.sh" --version "$version" "$out/nginx-site.sh" >/dev/null
 
-[[ $(grep -cx 'NM_REPO_DEFAULT=""' "$root/install.sh") == 1 ]] || die "install.sh: NM_REPO_DEFAULT line not found"
-sed "s|^NM_REPO_DEFAULT=\"\"\$|NM_REPO_DEFAULT=\"$repo\"|" "$root/install.sh" > "$out/install.sh"
+[[ $(grep -cx 'NM_REPO_DEFAULT="[^"]*"' "$root/install.sh") == 1 ]] || die "install.sh: NM_REPO_DEFAULT line not found"
+sed "s|^NM_REPO_DEFAULT=\"[^\"]*\"\$|NM_REPO_DEFAULT=\"$repo\"|" "$root/install.sh" > "$out/install.sh"
 bash -n "$out/install.sh"
 chmod 755 "$out/install.sh"
 

@@ -21,8 +21,9 @@
 # ==========================================================
 set -uo pipefail   # no -e: every step checks and reports its own failure
 
-# tools/release.sh sets this to the repository a release is published from.
-NM_REPO_DEFAULT=""
+# Repository to download from unless --repo or NM_REPO names another.
+# tools/release.sh sets it to the repository a release is published from.
+NM_REPO_DEFAULT="Bart0llo/nginx-manager"
 
 # NM_INSTALL_ROOT installs below another directory instead of / (staging
 # and tests): root is not required and no packages are installed.

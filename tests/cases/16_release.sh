@@ -107,6 +107,24 @@ t_release_assets() {
     assert_eq 1 "$(diff /src/install.sh "$d/install.sh" | grep -c '^>')" "only that line differs"
     assert_mode "$d/nginx-site.sh" 755
     assert_mode "$d/install.sh" 755
+
+    out=$(bash /src/tools/release.sh v2.3.4 Bart0llo/nginx-manager "$OUT/own" 2>&1); rc=$?
+    assert_eq 0 "$rc" "release.sh for the default repository exits 0"
+    assert_eq "$(sha256sum < /src/install.sh)" "$(sha256sum < "$OUT/own/install.sh")" \
+        "installer for the default repository is unchanged"
+}
+
+# The checkout's install.sh defaults to the public repository, and the
+# README's install commands download from that same repository.
+t_default_repository() {
+    assert_eq 'NM_REPO_DEFAULT="Bart0llo/nginx-manager"' "$(grep '^NM_REPO_DEFAULT=' /src/install.sh)" \
+        "install.sh defaults to Bart0llo/nginx-manager"
+    local readme
+    readme=$(cat /src/README.md)
+    assert_not_contains "$readme" "OWNER/REPO" "no placeholder repository in the README"
+    assert_eq "https://github.com/Bart0llo/nginx-manager/releases/latest/download/install.sh" \
+        "$(grep -oE 'https://github\.com/[^ ]*/releases/[^ ]*' /src/README.md | sort -u)" \
+        "every download URL in the README uses that repository"
 }
 
 t_release_rejects_bad_input() {
@@ -136,6 +154,12 @@ t_release_workflow() {
     assert_eq 1 "$(( tests_line > 0 && publish_line > tests_line ))" "tests run before publishing"
     assert_contains "$text" "    needs: test" "publishing waits for the tests"
     assert_contains "$text" "tools/release.sh" "assets built with tools/release.sh"
+    # The repository the workflow runs in, not a fixed name: a fork's
+    # release installs from the fork.
+    assert_contains "$text" 'tools/release.sh "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY"' \
+        "installer stamped with the workflow's repository"
+    assert_contains "$text" '--repo "$GITHUB_REPOSITORY"' "release created in the workflow's repository"
+    assert_not_contains "$text" "Bart0llo" "no repository name hard-coded"
     # Write access only in the publish job; the workflow default is read.
     assert_eq "contents: read" "$(sed -n '/^permissions:/{n;s/^ *//;p}' "$wf")" "read-only by default"
     assert_eq 1 "$(grep -c 'contents: write' "$wf")" "one job may write"
