@@ -10,6 +10,11 @@
 #   curl-rc    exit with this status instead (timeout, connection refused)
 #   status     answer every request with this HTTP status ...
 #   body       ... and this body (alone: status 200)
+#   status.<endpoint>, body.<endpoint>   the same for one endpoint ("/"
+#              written "_", e.g. status.rewrite_list)
+#   rewrites   body of GET rewrite/list (default [])
+#   rewrite-settings  body of GET rewrite/settings (default
+#              {"enabled":true}); versions before v0.107.68 answer 404
 # Every call is logged: its arguments to /tmp/mock-calls.log ("curl ..."),
 # and "<METHOD> <endpoint> auth=<none|ok|bad>" to /tmp/agh/requests.log.
 # The -K config read from stdin (where the login is) is never stored.
@@ -51,21 +56,30 @@ reply() { # status body
     exit 0
 }
 
-if [[ -f "$S/status" || -f "$S/body" ]]; then
-    reply "$(cat "$S/status" 2>/dev/null || echo 200)" "$(cat "$S/body" 2>/dev/null)"
-fi
+for f in "" ".${endpoint//\//_}"; do
+    if [[ -f "$S/status$f" || -f "$S/body$f" ]]; then
+        reply "$(cat "$S/status$f" 2>/dev/null || echo 200)" "$(cat "$S/body$f" 2>/dev/null)"
+    fi
+done
 [[ -f "$S/auth" && "$auth" != ok ]] && reply 401 ""
+version=$(cat "$S/version" 2>/dev/null || echo v0.107.79)
 if [[ "$method" == POST || "$method" == PUT ]] && ((has_body)) && [[ "$ctype" != application/json ]]; then
     reply 415 "only application/json is allowed"
 fi
 
 case "$method $endpoint" in
     "GET status")
-        reply 200 "$(jq -nc --arg v "$(cat "$S/version" 2>/dev/null || echo v0.107.79)" \
+        reply 200 "$(jq -nc --arg v "$version" \
             --argjson r "$(cat "$S/running" 2>/dev/null || echo true)" \
             '{version:$v, running:$r, protection_enabled:true, dns_addresses:["127.0.0.1"],
               dns_port:53, http_port:80, language:"en", protection_disabled_duration:0}')"
         ;;
-    *" status") reply 405 "only method GET is allowed" ;;
+    "GET rewrite/list") reply 200 "$(cat "$S/rewrites" 2>/dev/null || echo '[]')" ;;
+    "GET rewrite/settings")
+        if [[ "$(printf '%s\n' v0.107.68 "$version" | sort -V | head -1)" == v0.107.68 ]]; then
+            reply 200 "$(cat "$S/rewrite-settings" 2>/dev/null || echo '{"enabled":true}')"
+        fi
+        ;;
+    *" status"|*" rewrite/list"|*" rewrite/settings") reply 405 "only method GET is allowed" ;;
 esac
 reply 404 "404 page not found"

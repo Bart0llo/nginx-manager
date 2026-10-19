@@ -5,7 +5,8 @@
 #
 # Talks to AdGuard Home's web API (<URL>/control/...) with curl. Inactive
 # until configured: nothing is sent anywhere until a connection is saved
-# and the user opens the DNS screen. Nothing here runs when sites change.
+# and the user picks an action on the DNS screen. Nothing here runs when
+# sites change. The rewrite views only read (GET); they change nothing.
 #
 # The login password lives in $ADGUARD_SECRET (0600). It reaches curl only
 # as an Authorization header inside a config read from stdin (-K -): never
@@ -24,6 +25,16 @@ AG_MAX_BYTES=1048576
 AG_URL="" AG_USER="" AG_ANSWER="" AG_CONFIG_ERROR=""
 # Filled by adguard_request.
 AG_HTTP="" AG_BODY="" AG_ERROR=""
+# Filled by adguard_get_status.
+AG_VERSION="" AG_RUNNING="" AG_PROTECTION=""
+# Filled by adguard_fetch_rewrites: one entry per usable rewrite, sorted by
+# domain. AG_RW_STATE is true, false or unknown (AdGuard Home before
+# v0.107.68 does not report it). AG_RW_GLOBAL is the global rewrite switch:
+# true, false or unknown (AG_RW_GLOBAL_NOTE says why).
+AG_RW_DOMAIN=() AG_RW_ANSWER=() AG_RW_STATE=() AG_RW_SKIPPED=0
+AG_RW_GLOBAL="" AG_RW_GLOBAL_NOTE=""
+# Filled by adguard_match: indexes into the AG_RW_* arrays.
+AG_EXACT=() AG_WILD=()
 
 # ==========================================================
 # CONFIGURATION
@@ -230,37 +241,123 @@ adguard_require_config() {
     return 2
 }
 
+# GET /control/status. Sets AG_VERSION, AG_RUNNING and AG_PROTECTION
+# (true/false). Returns 0, or 1 with AG_ERROR.
+adguard_get_status() {
+    AG_VERSION="" AG_RUNNING="" AG_PROTECTION=""
+    adguard_request GET status || return 1
+    if ! AG_VERSION=$(jq -er 'if type == "object" then .version else empty end | strings' <<< "$AG_BODY" 2>/dev/null); then
+        AG_VERSION=""
+        AG_ERROR="$AG_URL did not answer like AdGuard Home (no version in /control/status)"
+        return 1
+    fi
+    AG_VERSION=$(adguard_clean_text "$AG_VERSION")
+    AG_RUNNING=$(jq -r '.running == true' <<< "$AG_BODY")
+    AG_PROTECTION=$(jq -r '.protection_enabled == true' <<< "$AG_BODY")
+}
+
+# Usable rewrites as a count of skipped records, then one
+# "domain<TAB>answer<TAB>true|false|unknown" line each, sorted by domain.
+# A record is skipped unless domain and answer are non-empty strings and
+# "enabled", if present, is a boolean. Control characters are removed, so
+# no field can hold a tab or drive the terminal.
+AG_RW_JQ='
+def clean: gsub("[[:cntrl:]]"; "") | .[0:255];
+def row:
+    if type == "object" and (.domain | type) == "string" and (.answer | type) == "string"
+        and (.enabled == null or (.enabled | type) == "boolean")
+    then [(.domain | clean), (.answer | clean), (if .enabled == null then "unknown" else (.enabled | tostring) end)]
+        | if .[0] != "" and .[1] != "" then . else null end
+    else null end;
+(. // []) | map(row)
+| (map(select(. == null)) | length),
+  (map(select(. != null)) | sort_by(.[0] | ascii_downcase)[] | join("\t"))'
+
+# Reads the version, every rewrite (GET /control/rewrite/list) and the
+# global rewrite switch (GET /control/rewrite/settings, v0.107.68+) into
+# AG_VERSION and AG_RW_*. Only reads. Stops at the first failed request,
+# so a rejected login is never sent twice. A missing or unreadable switch
+# leaves AG_RW_GLOBAL unknown and is not an error. Returns 0, or 1 with
+# AG_ERROR.
+adguard_fetch_rewrites() {
+    AG_RW_DOMAIN=() AG_RW_ANSWER=() AG_RW_STATE=() AG_RW_SKIPPED=0
+    AG_RW_GLOBAL=unknown AG_RW_GLOBAL_NOTE=""
+    adguard_get_status || return 1
+    adguard_request GET rewrite/list || return 1
+
+    local type rows domain answer state
+    type=$(jq -r type <<< "$AG_BODY" 2>/dev/null)
+    case "$type" in
+        array|null) ;;
+        "") AG_ERROR="the rewrite list from $AG_URL is not valid JSON"; return 1 ;;
+        *) AG_ERROR="the rewrite list from $AG_URL has an unexpected form (expected a JSON list)"; return 1 ;;
+    esac
+    if ! rows=$(jq -r "$AG_RW_JQ" <<< "$AG_BODY" 2>/dev/null); then
+        AG_ERROR="the rewrite list from $AG_URL could not be read"
+        return 1
+    fi
+    {
+        read -r AG_RW_SKIPPED
+        while IFS=$'\t' read -r domain answer state; do
+            AG_RW_DOMAIN+=("$domain") AG_RW_ANSWER+=("$answer") AG_RW_STATE+=("$state")
+        done
+    } <<< "$rows"
+
+    if adguard_request GET rewrite/settings; then
+        case "$(jq -r 'if type == "object" and (.enabled | type) == "boolean" then .enabled else "bad" end' <<< "$AG_BODY" 2>/dev/null)" in
+            true) AG_RW_GLOBAL=true ;;
+            false) AG_RW_GLOBAL=false ;;
+            *) AG_RW_GLOBAL_NOTE="unexpected answer from /control/rewrite/settings" ;;
+        esac
+    elif [[ "$AG_HTTP" == 404 || "$AG_HTTP" == 405 ]]; then
+        AG_RW_GLOBAL_NOTE="this AdGuard Home version has no global rewrite switch (added in v0.107.68)"
+    else
+        AG_RW_GLOBAL_NOTE="$AG_ERROR"
+    fi
+    AG_ERROR=""
+}
+
+# adguard_match <domain>  -- which fetched rewrites apply to a domain, as
+# AdGuard Home matches them (letter case and a final "." ignored):
+# AG_EXACT the records for exactly that name, AG_WILD the "*.<suffix>"
+# records covering it (any depth, never <suffix> itself).
+adguard_match() {
+    local host="${1,,}" i d
+    host="${host%.}"
+    AG_EXACT=() AG_WILD=()
+    for i in "${!AG_RW_DOMAIN[@]}"; do
+        d="${AG_RW_DOMAIN[i],,}"
+        d="${d%.}"
+        if [[ "$d" == "$host" ]]; then
+            AG_EXACT+=("$i")
+        elif [[ "$d" == "*."?* && "$host" == *"${d:1}" ]]; then
+            AG_WILD+=("$i")
+        fi
+    done
+}
+
 # adguard_test -- GET /control/status and shows the version and DNS state.
 # Returns 0 connected, 1 failed, 2 not configured.
 adguard_test() {
     adguard_require_config || return 2
-    if ! adguard_request GET status; then
+    if ! adguard_get_status; then
         msg_error "AdGuard Home: $AG_ERROR"
         log "AdGuard Home connection test failed: $AG_ERROR"
         return 1
     fi
-    local version running protection
-    if ! version=$(jq -er 'if type == "object" then .version else empty end | strings' <<< "$AG_BODY" 2>/dev/null); then
-        msg_error "$AG_URL did not answer like AdGuard Home (no version in /control/status)"
-        log "AdGuard Home connection test failed: not an AdGuard Home API response"
-        return 1
-    fi
-    version=$(adguard_clean_text "$version")
-    running=$(jq -r '.running == true' <<< "$AG_BODY")
-    protection=$(jq -r '.protection_enabled == true' <<< "$AG_BODY")
 
-    msg_success "Connected to AdGuard Home $version"
-    if [[ "$running" == true ]]; then
+    msg_success "Connected to AdGuard Home $AG_VERSION"
+    if [[ "$AG_RUNNING" == true ]]; then
         ui_kv "DNS server" "$(ui_badge ok "Running")"
     else
         ui_kv "DNS server" "$(ui_badge warn "Not running")"
     fi
-    if [[ "$protection" == true ]]; then
+    if [[ "$AG_PROTECTION" == true ]]; then
         ui_kv "Protection" "$(ui_badge on "Enabled")"
     else
         ui_kv "Protection" "$(ui_badge off "Disabled")"
     fi
-    log "AdGuard Home connection test passed ($version)"
+    log "AdGuard Home connection test passed ($AG_VERSION)"
 }
 
 # ==========================================================
@@ -308,7 +405,12 @@ adguard_menu() {
         adguard_show_connection
         configured=$?
         echo
-        items=("c|Connection|AdGuard Home address, login and default IP")
+        items=()
+        if ((configured == 0)); then
+            items+=("s|Your sites' DNS|rewrites for your sites' domains (read-only)"
+                "a|All rewrites|every rewrite in AdGuard Home (read-only)")
+        fi
+        items+=("c|Connection|AdGuard Home address, login and default IP")
         if ((configured == 0)); then
             items+=("t|Test connection|check the address and login"
                 "r|Remove connection|delete the saved address and password")
@@ -316,6 +418,8 @@ adguard_menu() {
         items+=("q|Back|")
         ui_menu "Actions" q "${items[@]}" || return
         case "$UI_REPLY" in
+            s) adguard_sites_screen ;;
+            a) adguard_rewrites_screen ;;
             c) adguard_connection_prompt ;;
             t) adguard_test_screen ;;
             r) adguard_remove_prompt ;;
@@ -329,6 +433,186 @@ adguard_test_screen() {
     adguard_load_config
     msg_step "Contacting ${AG_URL:-AdGuard Home}..."
     ui_shield adguard_test
+    pause
+}
+
+# ==========================================================
+# REWRITE VIEWS (read-only)
+# ==========================================================
+# Fetches the rewrites for a view and shows the server, the count and the
+# global switch, or what failed. Returns 0, or 1 when there is nothing to
+# show.
+adguard_fetch_view() {
+    adguard_require_config || return 1
+    msg_step "Contacting $AG_URL..."
+    if ! ui_shield adguard_fetch_rewrites; then
+        msg_error "AdGuard Home: $AG_ERROR"
+        log "AdGuard Home rewrites not read: $AG_ERROR"
+        return 1
+    fi
+    echo
+    ui_kv "Server" "$AG_URL (AdGuard Home $AG_VERSION)"
+    ui_kv "Rewrites" "${#AG_RW_DOMAIN[@]} in AdGuard Home"
+    case "$AG_RW_GLOBAL" in
+        true) ui_kv "Rewriting" "$(ui_badge on "Enabled")" ;;
+        false)
+            ui_kv "Rewriting" "$(ui_badge warn "Disabled")"
+            msg_warning "Rewrites are turned off in AdGuard Home: the records below are not applied now"
+            ;;
+        *)
+            ui_kv "Rewriting" "$(ui_badge unknown "Unknown")"
+            ui_hint "Whether rewrites are on cannot be determined: $AG_RW_GLOBAL_NOTE"
+            ;;
+    esac
+    ((AG_RW_SKIPPED)) && msg_warning "$AG_RW_SKIPPED record(s) skipped: not a domain and answer as expected"
+    return 0
+}
+
+# Text after an answer for a record's own switch: AdGuard Home before
+# v0.107.68 does not report it, which is not the same as disabled.
+adguard_state_suffix() {
+    case "$1" in
+        false) printf ' %s' "$(ui_badge off "disabled")" ;;
+        unknown) printf ' %s' "${GRAY}(enabled state not reported)${NC}" ;;
+    esac
+}
+
+# adguard_answers <index>...  -- how the answers of a domain's active exact
+# records relate: single, duplicate (same answer more than once), dual (one
+# IPv4 and one IPv6 address) or conflict (different answers of a kind, or a
+# name next to anything). "A"/"AAAA" (keep the upstream records of that
+# type) count as an IPv4/IPv6 answer.
+adguard_answers() {
+    local i a kind n4=0 n6=0 nname=0
+    local -A seen=()
+    for i in "$@"; do
+        a="${AG_RW_ANSWER[i],,}"
+        [[ -n "${seen[$a]}" ]] && continue
+        seen[$a]=1
+        if validate_ipv4 "$a" || [[ "$a" == a ]]; then
+            ((n4++))
+        elif validate_ipv6 "$a" || [[ "$a" == aaaa ]]; then
+            ((n6++))
+        else
+            ((nname++))
+        fi
+    done
+    if ((${#seen[@]} == 1)); then
+        kind=single
+        (($# > 1)) && kind=duplicate
+    elif ((nname || n4 > 1 || n6 > 1)); then
+        kind=conflict
+    elif (($# > ${#seen[@]})); then
+        kind=duplicate
+    else
+        kind=dual
+    fi
+    echo "$kind"
+}
+
+# adguard_site_dns <site> <domain>  -- the fetched rewrites for one site.
+adguard_site_dns() {
+    local name="$1" domain="$2" i on=() off=()
+    printf '  %s  %s\n' "${BOLD}$domain${NC}" "${GRAY}(site $name)${NC}"
+    if ! validate_domain "$domain"; then
+        printf '      %s\n' "$(ui_badge err "Not a valid domain name - not looked up")"
+        return
+    fi
+    adguard_match "$domain"
+    for i in "${AG_EXACT[@]}"; do
+        if [[ "${AG_RW_STATE[i]}" == false ]]; then off+=("$i"); else on+=("$i"); fi
+    done
+
+    if ((${#on[@]})); then
+        case "$(adguard_answers "${on[@]}")" in
+            single) printf '      %s\n' "$(ui_badge ok "Exact rewrite")" ;;
+            dual) printf '      %s\n' "$(ui_badge ok "Exact rewrites (IPv4 and IPv6)")" ;;
+            duplicate) printf '      %s\n' "$(ui_badge warn "${#on[@]} exact rewrites, some repeated (duplicates)")" ;;
+            conflict) printf '      %s\n' "$(ui_badge warn "${#on[@]} exact rewrites with conflicting answers - clients may get any of them")" ;;
+        esac
+    elif ((${#off[@]})); then
+        printf '      %s\n' "$(ui_badge off "Exact rewrite, disabled in AdGuard Home")"
+    elif ((${#AG_WILD[@]})); then
+        printf '      %s\n' "$(ui_badge unknown "No exact rewrite - a wildcard rewrite may match")"
+    else
+        printf '      %s\n' "$(ui_badge none "No rewrite found")"
+        return
+    fi
+    for i in "${on[@]}" "${off[@]}"; do
+        printf '        %s %s%s\n' "$SYM_ARROW" "${AG_RW_ANSWER[i]}" "$(adguard_state_suffix "${AG_RW_STATE[i]}")"
+    done
+    if ((${#AG_WILD[@]})); then
+        if ((${#on[@]})); then
+            ui_hint "    Also covered by a wildcard rewrite (the exact rewrite takes precedence):"
+        elif ((${#off[@]})); then
+            ui_hint "    Wildcard rewrites that may match instead:"
+        fi
+        for i in "${AG_WILD[@]}"; do
+            printf '        %s %s %s%s\n' "${AG_RW_DOMAIN[i]}" "$SYM_ARROW" "${AG_RW_ANSWER[i]}" \
+                "$(adguard_state_suffix "${AG_RW_STATE[i]}")"
+        done
+    fi
+}
+
+# What AdGuard Home has for each site's domain. Contacts it only when there
+# is a site to look up.
+adguard_sites_screen() {
+    ui_screen "DNS (AdGuard Home)" "Your sites' DNS"
+    if ! jq empty "$SITES_DB" >/dev/null 2>&1; then
+        msg_error "The site database $SITES_DB cannot be read (invalid JSON)"
+        pause
+        return
+    fi
+    local names=() domains=() name domain backend tls flag i
+    while IFS=$'\t' read -r name domain backend tls flag; do
+        names+=("$name") domains+=("$domain")
+    done < <(sites_tsv)
+    if ((${#names[@]} == 0)); then
+        echo "  No sites configured yet - no domain to look up."
+        ui_hint "All rewrites lists every rewrite in AdGuard Home."
+        pause
+        return
+    fi
+
+    if adguard_fetch_view; then
+        echo
+        for i in "${!names[@]}"; do
+            adguard_site_dns "${names[i]}" "${domains[i]}"
+        done
+        echo
+        ui_hint "Read only: nothing was changed in AdGuard Home or nginx."
+        ui_hint "Exact rewrites are for the domain itself; a wildcard (*.example.com) covers its subdomains."
+    fi
+    pause
+}
+
+# Every rewrite AdGuard Home reports, the sites' domains or not.
+adguard_rewrites_screen() {
+    ui_screen "DNS (AdGuard Home)" "All rewrites"
+    if adguard_fetch_view; then
+        echo
+        if ((${#AG_RW_DOMAIN[@]} == 0)); then
+            echo "  No rewrites in AdGuard Home"
+        else
+            local i badge text dw=34 aw=24
+            ((UI_COLS < 80)) && dw=$((UI_COLS > 56 ? UI_COLS - 46 : 10))
+            printf "  %-${dw}s %-${aw}s %s\n" "DOMAIN" "ANSWER" "STATE"
+            for i in "${!AG_RW_DOMAIN[@]}"; do
+                case "${AG_RW_STATE[i]}" in
+                    true) badge=on text=ENABLED ;;
+                    false) badge=off text=DISABLED ;;
+                    *) badge=unknown text="NOT REPORTED" ;;
+                esac
+                printf "  %-${dw}s %-${aw}s %s\n" "$(truncate_field "${AG_RW_DOMAIN[i]}" "$dw")" \
+                    "$(truncate_field "${AG_RW_ANSWER[i]}" "$aw")" "$(ui_badge "$badge" "$text")"
+            done
+            [[ " ${AG_RW_STATE[*]} " == *" unknown "* ]] \
+                && ui_hint "NOT REPORTED: this AdGuard Home version does not say whether a rewrite is enabled."
+        fi
+        echo
+        ui_hint "Everything AdGuard Home reports, also for domains that are not your sites;"
+        ui_hint "a record being listed does not mean NGINX Manager created it. Read only: nothing was changed."
+    fi
     pause
 }
 
