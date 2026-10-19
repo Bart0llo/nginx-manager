@@ -248,6 +248,7 @@ t_no_network_until_used() {
     out=$(run_app '1\n\n8\nq\nq\n')
     assert_contains "$out" "DNS (AdGuard Home)" "DNS screen opened"
     assert_contains "$out" "https://dns.lan.example.com" "connection shown"
+    assert_contains "$out" "Add rewrite" "add offered"
     assert_not_called "curl" "start, status and the DNS screen send nothing"
 
     seed 'site_create app app.lan.example.com 127.0.0.1:8080 http; enable_site app;
@@ -360,10 +361,10 @@ t_menu_test_screen() {
 # ==========================================================
 t_gum_set_connection() {
     fixture_configured; use_adguard "admin:$PW"
-    # DNS, Connection, URL, user, password, IP, save, test; Back (6th once
+    # DNS, Connection, URL, user, password, IP, save, test; Back (7th once
     # configured), Quit.
     use_gum "0 #8" "0 #1" "0 https://dns.lan.example.com" "0 admin" "0 $PW" "0 192.168.1.10" \
-        "0" "0" "0 #6" "0 #10"
+        "0" "0" "0 #7" "0 #10"
     local out rc
     out=$(printf '\n' | NM_UI=gum timeout 20 bash "$APP" 2>&1); rc=$?
     assert_eq 0 "$rc" "exits 0"
@@ -770,18 +771,22 @@ EOF
 t_views_not_configured() {
     fixture_configured; use_adguard; load_app; agh_sites
     local out
-    out=$(adguard_menu <<< $'s\na\nq\n' 2>&1)
+    out=$(adguard_menu <<< $'s\na\nn\nq\n' 2>&1)
     assert_not_contains "$out" "Your sites' DNS" "views not offered"
-    assert_count "$out" "Invalid option" 2 "their keys refused"
+    assert_not_contains "$out" "Add rewrite" "add not offered"
+    assert_count "$out" "Invalid option" 3 "their keys refused"
     printf 'URL=http://admin:hunter2@dns\n' > "$CONF"
-    out=$(adguard_menu <<< $'s\nq\n' 2>&1)
+    out=$(adguard_menu <<< $'s\nn\nq\n' 2>&1)
     assert_not_contains "$out" "All rewrites" "not offered with an invalid file"
+    assert_not_contains "$out" "Add rewrite" "add not offered with an invalid file"
     assert_not_called "curl" "nothing sent"
 
     # Called directly anyway: refused before contacting anything.
     rm -f "$CONF"
     out=$(adguard_rewrites_screen 2>&1 </dev/null)
     assert_contains "$out" "not configured" "refused"
+    out=$(adguard_add_screen 2>&1 </dev/null)
+    assert_contains "$out" "not configured" "add refused"
     assert_not_called "curl" "nothing sent"
 }
 
@@ -801,8 +806,8 @@ t_views_non_interactive() {
 t_gum_views() {
     agh_setup
     seed agh_sites
-    # DNS, Your sites' DNS, All rewrites, Back (6th), Quit.
-    use_gum "0 #8" "0 #1" "0 #2" "0 #6" "0 #10"
+    # DNS, Your sites' DNS, All rewrites, Back (7th), Quit.
+    use_gum "0 #8" "0 #1" "0 #2" "0 #7" "0 #10"
     local out rc calls
     out=$(printf '\n\n' | NM_UI=gum timeout 20 bash "$APP" 2>&1); rc=$?
     assert_eq 0 "$rc" "exits 0"
@@ -826,6 +831,426 @@ t_gum_views_cancel() {
     assert_eq 0 "$rc" "exits 0"
     assert_contains "$out" "DNS (AdGuard Home)" "DNS screen opened"
     assert_eq "" "$(agh_requests)" "Esc sends nothing"
+}
+
+# ==========================================================
+# Add rewrite
+# ==========================================================
+# The rewrites before any change, compact.
+RW_BEFORE=""
+agh_add_setup() {
+    agh_setup; load_app; agh_sites
+    RW_BEFORE=$(jq -c . /tmp/agh/rewrites)
+}
+
+posts() { agh_requests | grep -c '^POST'; }
+add_bodies() { cat /tmp/agh/bodies.log 2>/dev/null; }
+# The mock's rewrites, compact (as stored when not JSON).
+rw_now() { jq -c . /tmp/agh/rewrites 2>/dev/null || cat /tmp/agh/rewrites; }
+
+# Fails if anything was written to AdGuard Home.
+assert_no_write() { # what
+    assert_eq 0 "$(posts)" "$1: no POST"
+    assert_eq "" "$(add_bodies)" "$1: no request body"
+    assert_eq "$RW_BEFORE" "$(rw_now)" "$1: rewrites unchanged"
+}
+
+# Fails unless the original records are still there, unchanged and first.
+assert_others_kept() { # what
+    assert_eq "$RW_BEFORE" "$(jq -c ".[0:$(jq length <<< "$RW_BEFORE")]" /tmp/agh/rewrites)" \
+        "$1: other records unchanged"
+}
+
+t_add_rewrite_ipv4() {
+    agh_add_setup
+    local out
+    # Add rewrite, site apex (deep.example.org: no rewrite), Enter keeps the
+    # default IP, confirm.
+    out=$(adguard_menu <<< $'n\napex\n\ny\n\nq\n' 2>&1)
+    assert_contains "$out" "DNS (AdGuard Home) › Add rewrite" "screen opened"
+    assert_contains "$out" "IP address [192.168.1.10]: " "default IP offered"
+    assert_matches "$out" "Domain +deep\.example\.org" "the site's domain"
+    assert_matches "$out" "IP address +192\.168\.1\.10" "summary"
+    assert_not_contains "$out" "For this rewrite only" "default kept: no note"
+    assert_contains "$out" "Rewrite added: deep.example.org → 192.168.1.10" "added"
+    assert_eq $'GET status auth=ok\nGET rewrite/list auth=ok\nGET rewrite/settings auth=ok\nGET rewrite/list auth=ok\nPOST rewrite/add auth=ok\nGET rewrite/list auth=ok' \
+        "$(agh_requests)" "check, re-check, one POST, read back"
+    assert_eq $'rewrite/add\tapplication/json\t{"domain":"deep.example.org","answer":"192.168.1.10"}' \
+        "$(add_bodies)" "path, content type and JSON body"
+    assert_called "-X POST" "POST method"
+    assert_called "-H Content-Type: application/json" "content type header"
+    assert_called "-K -" "login on stdin"
+    assert_not_called " -L" "redirects not followed"
+    assert_eq 13 "$(jq length /tmp/agh/rewrites)" "one record more"
+    assert_eq '{"domain":"deep.example.org","answer":"192.168.1.10","enabled":true}' \
+        "$(jq -c '.[-1]' /tmp/agh/rewrites)" "the new record"
+    assert_others_kept "ipv4"
+    assert_contains "$(cat /var/log/nginx-manager/manager.log)" \
+        "AdGuard Home rewrite deep.example.org -> 192.168.1.10 added and confirmed" "logged"
+    assert_no_leak "$out" "ipv4"
+}
+
+t_add_rewrite_ipv6_override() {
+    agh_add_setup
+    local out
+    out=$(adguard_menu <<< $'n\napex\nFD00::20\ny\n\nq\n' 2>&1)
+    assert_contains "$out" "For this rewrite only: the default IP stays 192.168.1.10." "override explained"
+    assert_contains "$out" "Rewrite added: deep.example.org → FD00::20" "added"
+    assert_contains "$(add_bodies)" '{"domain":"deep.example.org","answer":"FD00::20"}' "IPv6 sent as typed"
+    adguard_load_config
+    assert_eq "192.168.1.10" "$AG_ANSWER" "default IP not changed"
+    assert_others_kept "ipv6"
+
+    # The next run offers the default again; that answer now conflicts.
+    : > /tmp/agh/requests.log; rm -f /tmp/agh/bodies.log
+    RW_BEFORE=$(jq -c . /tmp/agh/rewrites)
+    out=$(adguard_menu <<< $'n\napex\n\n\nq\n' 2>&1)
+    assert_contains "$out" "IP address [192.168.1.10]: " "default offered again"
+    assert_contains "$out" "deep.example.org already has a rewrite with another answer" "conflict"
+    assert_no_write "conflict after override"
+
+    # Another spelling of the same IPv6 address is the same answer.
+    out=$(adguard_menu <<< $'n\napex\nfd00:0:0::20\n\nq\n' 2>&1)
+    assert_contains "$out" "The rewrite already exists - nothing to add" "same address"
+    assert_no_write "same address, other spelling"
+}
+
+t_add_rewrite_invalid_ip() {
+    agh_add_setup
+    local out
+    # (<<< adds the final newline: input ends at the next prompt.)
+    out=$(adguard_menu <<< $'n\napex\n1.2.3\nfd00::g\napp.example.com\n192.168.1.256' 2>&1)
+    assert_count "$out" "Invalid IP address - enter an IPv4 or IPv6 address" 4 "each invalid answer refused"
+    assert_contains "$out" "Input closed" "then input ended"
+    assert_eq "" "$(agh_requests)" "nothing sent"
+
+    # Without a default IP an empty answer is refused too.
+    sed -i 's/^DEFAULT_ANSWER=.*/DEFAULT_ANSWER=/' "$CONF"
+    out=$(adguard_menu <<< $'n\napex\n' 2>&1)
+    assert_contains "$out" "IP address: " "no default offered"
+    assert_contains "$out" "Invalid IP address" "empty refused"
+    assert_eq "" "$(agh_requests)" "nothing sent"
+}
+
+t_add_rewrite_existing() {
+    agh_add_setup
+    local site ip expected out
+    while IFS='|' read -r site ip expected; do
+        : > /tmp/agh/requests.log
+        out=$(adguard_menu <<< $'n\n'"$site"$'\n'"$ip"$'\n\nq\n' 2>&1)
+        assert_contains "$out" "$expected" "$site $ip: explained"
+        assert_contains "$out" "Nothing was sent: Add rewrite never changes existing records." "$site $ip: nothing sent"
+        assert_not_contains "$out" "Add this rewrite?" "$site $ip: not offered"
+        assert_eq 3 "$(agh_requests | grep -c .)" "$site $ip: only the check"
+        assert_no_write "$site $ip"
+    done <<'EOF'
+app|192.168.1.10|The rewrite already exists - nothing to add
+app|192.168.1.99|app.lan.example.com already has a rewrite with another answer - it was not changed
+app|fd00::10|already has a rewrite with another answer
+off|192.168.1.14|The rewrite already exists, but is disabled in AdGuard Home
+off|192.168.1.20|already has a rewrite with another answer
+old|192.168.1.15|The rewrite already exists - nothing to add
+dup|192.168.1.12|dup.lan.example.com already has 2 exact rewrites - they need a manual review
+dual|192.168.1.11|dual.lan.example.com already has 2 exact rewrites - they need a manual review
+clash|192.168.1.50|clash.lan.example.com already has 2 exact rewrites
+EOF
+
+    out=$(adguard_menu <<< $'n\napp\n192.168.1.99\n\nq\n' 2>&1)
+    assert_contains "$out" "app.lan.example.com → 192.168.1.10" "existing record shown"
+    assert_contains "$out" "edit it in" "pointed to editing"
+    out=$(adguard_menu <<< $'n\noff\n192.168.1.14\n\nq\n' 2>&1)
+    assert_contains "$out" "off.lan.example.com → 192.168.1.14 ○ disabled" "disabled record shown"
+    assert_contains "$out" "enable it in" "pointed to enabling"
+    out=$(adguard_menu <<< $'n\ndual\n192.168.1.11\n\nq\n' 2>&1)
+    assert_contains "$out" "DUAL.lan.example.com. → 192.168.1.11" "every record shown, as stored"
+    assert_contains "$out" "dual.lan.example.com → fd00::11" "every record shown"
+    assert_contains "$out" "necessarily created by NGINX Manager" "no ownership assumed"
+}
+
+t_add_rewrite_wildcard() {
+    agh_add_setup
+    local out
+    out=$(adguard_menu <<< $'n\nwild\n\nn\n\nq\n' 2>&1)
+    assert_contains "$out" "No exact rewrite for wild.lan.example.com, but a wildcard rewrite may already answer for it:" "explained"
+    assert_contains "$out" "*.lan.example.com → 192.168.1.1" "which wildcard"
+    assert_contains "$out" "Add an exact rewrite anyway? [y/N]" "asked, default no"
+    assert_contains "$out" "Cancelled - nothing was changed" "declined"
+    assert_not_contains "$out" "already exists" "a wildcard is not an exact record"
+    assert_no_write "wildcard declined"
+
+    # Enter at the wildcard question is no as well.
+    out=$(adguard_menu <<< $'n\nwild\n\n\n\nq\n' 2>&1)
+    assert_no_write "wildcard default"
+
+    out=$(adguard_menu <<< $'n\nwild\n\ny\ny\n\nq\n' 2>&1)
+    assert_contains "$out" "Rewrite added: wild.lan.example.com → 192.168.1.10" "added after both confirmations"
+    assert_eq 1 "$(posts)" "one POST"
+    assert_others_kept "wildcard"
+}
+
+t_add_rewrite_cancel() {
+    agh_add_setup
+    local out
+    out=$(adguard_menu <<< $'n\n\n\nq\n' 2>&1)
+    assert_contains "$out" "Cancelled - nothing was changed" "no site picked"
+    assert_eq "" "$(agh_requests)" "nothing sent"
+
+    # (<<< adds the final newline: input ends at the next prompt.)
+    out=$(adguard_menu <<< $'n\napex' 2>&1)
+    assert_contains "$out" "Input closed" "input ended at the IP"
+    assert_eq "" "$(agh_requests)" "nothing sent"
+
+    out=$(adguard_menu <<< $'n\napex\n\nn\n\nq\n' 2>&1)
+    assert_contains "$out" "Add this rewrite? [Y/n]" "summary asked"
+    assert_contains "$out" "Cancelled - nothing was changed" "summary declined"
+    assert_no_write "summary declined"
+
+    out=$(adguard_menu <<< $'n\napex\n' 2>&1)
+    assert_contains "$out" "Add this rewrite? [Y/n]" "input ended at the summary"
+    assert_no_write "input ended at the summary"
+
+    UI_NONINTERACTIVE=1
+    : > /tmp/agh/requests.log
+    out=$(adguard_add_screen 2>&1 </dev/null)
+    assert_contains "$out" "Non-interactive mode" "non-interactive: stops"
+    assert_eq "" "$(agh_requests)" "non-interactive: nothing sent"
+}
+
+t_add_rewrite_no_sites() {
+    agh_setup; load_app
+    local out
+    out=$(adguard_menu <<< $'n\n\nq\n' 2>&1)
+    assert_contains "$out" "No sites configured yet - no domain to add a rewrite for." "explained"
+    assert_eq "" "$(agh_requests)" "nothing sent"
+
+    db_save bad bad_domain 127.0.0.1:8080 http false >/dev/null 2>&1
+    out=$(adguard_menu <<< $'n\nbad\n\nq\n' 2>&1)
+    assert_contains "$out" "Site bad has no valid domain name" "invalid domain refused"
+    assert_eq "" "$(agh_requests)" "nothing sent"
+}
+
+t_add_rewrite_normalization() {
+    agh_add_setup
+    db_save mixed Mixed.Example.NET 127.0.0.1:8080 http false >/dev/null 2>&1
+    local out
+    out=$(adguard_menu <<< $'n\nmixed\nFD00:0:0::30\ny\n\nq\n' 2>&1)
+    assert_contains "$out" "AdGuard Home stores the domain in lowercase: mixed.example.net" "explained"
+    assert_contains "$(add_bodies)" '{"domain":"Mixed.Example.NET","answer":"FD00:0:0::30"}' "the site's domain as configured"
+    assert_contains "$(jq -c '.[-1]' /tmp/agh/rewrites)" '"domain":"mixed.example.net"' "stored lowercase"
+    assert_contains "$out" "Rewrite added: Mixed.Example.NET → FD00:0:0::30" "confirmed despite the lowercasing"
+
+    # Existing records match whatever the letter case.
+    db_save upper APP.Lan.Example.com 127.0.0.1:8080 http false >/dev/null 2>&1
+    rm -f /tmp/agh/bodies.log; : > /tmp/agh/requests.log
+    RW_BEFORE=$(jq -c . /tmp/agh/rewrites)
+    out=$(adguard_menu <<< $'n\nupper\n192.168.1.10\n\nq\n' 2>&1)
+    assert_contains "$out" "The rewrite already exists" "case-insensitive match"
+    assert_no_write "other letter case"
+}
+
+t_add_ip_key() {
+    fixture_configured; load_app
+    local a b expected
+    while IFS='|' read -r a b expected; do
+        adguard_same_answer "$a" "$b"; assert_eq "$expected" $? "same answer: $a / $b"
+    done <<'EOF'
+192.168.1.10|192.168.1.10|0
+192.168.1.10|192.168.1.1|1
+fd00::1|FD00:0000::0001|0
+fd00::1|fd00:0:0:0:0:0:0:1|0
+::|0:0:0:0:0:0:0:0|0
+::ffff:192.168.1.10|::ffff:c0a8:10a|0
+fd00::1|fd00::10|1
+1::|1:0:0:0:0:0:0:0|0
+::1|1::|1
+192.168.1.10|::ffff:192.168.1.10|1
+host.example.com|HOST.example.com|0
+EOF
+    assert_eq "fd00:0000:0000:0000:0000:0000:0000:0001" "$(adguard_ip_key FD00::1)" "full form"
+}
+
+# adguard_create_rewrite directly: what reaches AdGuard Home and the
+# result, with the list from agh_rewrites.
+t_add_create_results() {
+    fixture_configured; load_app
+    local setup rc expected out
+    while IFS='|' read -r setup rc expected; do
+        reset_agh; agh_setup; adguard_load_config
+        RW_BEFORE=$(jq -c . /tmp/agh/rewrites)
+        : > /var/log/nginx-manager/manager.log
+        eval "$setup"
+        out=$(adguard_create_rewrite deep.example.org 192.168.1.10 2>&1)
+        assert_eq "$rc" $? "status: $setup"
+        assert_contains "$out" "$expected" "message: $setup"
+        assert_eq 1 "$(posts)" "sent once, never retried: $setup"
+        assert_others_kept "$setup"
+        assert_no_leak "$out" "$setup"
+        case "$rc" in
+            1)
+                assert_contains "$out" "The rewrite was not added" "not claimed: $setup"
+                assert_eq "$RW_BEFORE" "$(jq -c . /tmp/agh/rewrites)" "nothing stored: $setup"
+                assert_eq 2 "$(agh_requests | grep -c .)" "nothing read after: $setup"
+                ;;
+            3)
+                assert_not_contains "$out" "Rewrite added" "not claimed: $setup"
+                assert_contains "$out" "AdGuard Home does not refuse duplicates" "warned: $setup"
+                assert_contains "$(cat /var/log/nginx-manager/manager.log)" "deep.example.org -> 192.168.1.10" "logged: $setup"
+                ;;
+        esac
+    done <<'EOF'
+:|0|Rewrite added: deep.example.org → 192.168.1.10
+printf '[]' > /tmp/agh/add-store|3|AdGuard Home accepted the rewrite, but deep.example.org → 192.168.1.10 is not in its list
+printf '[{"domain":"deep.example.org","answer":"192.168.1.77","enabled":true}]' > /tmp/agh/add-store|3|is not in its list
+printf '[{"domain":"other.example.org","answer":"192.168.1.10","enabled":true}]' > /tmp/agh/add-store|3|is not in its list
+printf '[{"domain":"deep.example.org","answer":"192.168.1.10","enabled":false}]' > /tmp/agh/add-store|3|is not in its list
+printf '[{"domain":"deep.example.org.","answer":"192.168.1.10","enabled":true}]' > /tmp/agh/add-store|3|is not in its list
+mkdir -p /tmp/agh/after-add; echo 500 > /tmp/agh/after-add/status.rewrite_list|3|accepted the rewrite, but it could not be confirmed: AdGuard Home server error (HTTP 500)
+mkdir -p /tmp/agh/after-add; printf 'nope' > /tmp/agh/after-add/body.rewrite_list|3|could not be confirmed: the rewrite list from https://dns.lan.example.com is not valid JSON
+mkdir -p /tmp/agh/after-add; echo 28 > /tmp/agh/after-add/curl-rc.rewrite_list|3|could not be confirmed: no answer from https://dns.lan.example.com within 15s (timed out)
+echo 401 > /tmp/agh/status.rewrite_add|1|login failed
+printf '400' > /tmp/agh/status.rewrite_add; printf 'json.Decode: unexpected EOF' > /tmp/agh/body.rewrite_add|1|AdGuard Home rejected the request: json.Decode: unexpected EOF
+echo 404 > /tmp/agh/status.rewrite_add|1|this AdGuard Home version does not support the request
+echo 405 > /tmp/agh/status.rewrite_add|1|not found (HTTP 405)
+echo 403 > /tmp/agh/status.rewrite_add|1|access denied
+echo 302 > /tmp/agh/status.rewrite_add|1|redirected (HTTP 302)
+echo 7 > /tmp/agh/curl-rc.rewrite_add|1|could not connect
+echo 60 > /tmp/agh/curl-rc.rewrite_add|1|is not trusted or does not match its name
+echo 35 > /tmp/agh/curl-rc.rewrite_add|1|TLS connection to https://dns.lan.example.com failed
+printf '500' > /tmp/agh/status.rewrite_add; printf 'cannot write config' > /tmp/agh/body.rewrite_add|3|server error (HTTP 500): cannot write config
+echo 28 > /tmp/agh/curl-rc.rewrite_add|3|timed out
+echo 52 > /tmp/agh/curl-rc.rewrite_add|3|broke off without an answer
+EOF
+
+    # A 200 with an unexpected body is not success on its own: the record
+    # must be in the list.
+    reset_agh; agh_setup; adguard_load_config
+    printf '{"error":"x"}' > /tmp/agh/body.rewrite_add
+    out=$(adguard_create_rewrite deep.example.org 192.168.1.10 2>&1)
+    assert_eq 3 $? "200 without the record: not confirmed"
+    assert_contains "$out" "is not in its list" "explained"
+}
+
+t_add_create_refusals() {
+    fixture_configured; load_app
+    local out
+    # An exact rewrite there by the time of sending: nothing sent.
+    agh_setup; adguard_load_config
+    out=$(adguard_create_rewrite APP.lan.example.com 192.168.1.10 2>&1)
+    assert_eq 2 $? "exact rewrite: refused"
+    assert_contains "$out" "An exact rewrite for APP.lan.example.com exists by now - nothing was sent" "explained"
+    assert_eq 0 "$(posts)" "no POST"
+
+    # The re-check itself fails: nothing sent, no retry.
+    local setup
+    for setup in "echo admin:other > /tmp/agh/auth" "echo 28 > /tmp/agh/curl-rc" "printf '{}' > /tmp/agh/rewrites"; do
+        reset_agh; agh_setup; adguard_load_config
+        eval "$setup"
+        out=$(adguard_create_rewrite deep.example.org 192.168.1.10 2>&1)
+        assert_eq 1 $? "re-check failed: $setup"
+        assert_contains "$out" "Nothing was sent: the rewrites could not be checked" "explained: $setup"
+        assert_eq 1 "$(agh_requests | grep -c .)" "one request only: $setup"
+        assert_no_leak "$out" "$setup"
+    done
+}
+
+# The screen with failures at the check or the POST.
+t_add_screen_errors() {
+    agh_add_setup
+    local setup expected requests out
+    while IFS='|' read -r setup expected requests; do
+        reset_agh; agh_setup
+        eval "$setup"
+        RW_BEFORE=$(rw_now)
+        out=$(adguard_menu <<< $'n\napex\n\ny\n\nq\n' 2>&1)
+        assert_contains "$out" "$expected" "message: $setup"
+        assert_not_contains "$out" "Rewrite added" "not claimed: $setup"
+        assert_eq "$requests" "$(agh_requests | grep -c .)" "a failed check is not retried: $setup"
+        assert_no_write "$setup"
+        assert_no_leak "$out" "$setup"
+    done <<'EOF'
+echo admin:other > /tmp/agh/auth|login failed|1
+echo 28 > /tmp/agh/curl-rc|timed out|1
+echo 60 > /tmp/agh/curl-rc|update-ca-certificates|1
+printf '503' > /tmp/agh/status.rewrite_list|server error (HTTP 503)|2
+printf 'nope' > /tmp/agh/rewrites|not valid JSON|2
+EOF
+
+    reset_agh; agh_setup
+    echo 401 > /tmp/agh/status.rewrite_add
+    out=$(adguard_menu <<< $'n\napex\n\ny\n\nq\n' 2>&1)
+    assert_contains "$out" "The rewrite was not added" "POST failure reported"
+    assert_not_contains "$out" "Rewrite added" "not claimed"
+    assert_eq 5 "$(agh_requests | grep -c .)" "nothing after the failed POST"
+    assert_no_leak "$out" "POST 401"
+
+    # Rewrites turned off: said in the summary.
+    reset_agh; agh_setup
+    echo '{"enabled":false}' > /tmp/agh/rewrite-settings
+    out=$(adguard_menu <<< $'n\napex\n\ny\n\nq\n' 2>&1)
+    assert_contains "$out" "this one applies once they are turned on" "global switch noted"
+    assert_contains "$out" "Rewrite added" "still added"
+}
+
+t_add_rewrite_old_version() {
+    agh_add_setup
+    echo v0.107.55 > /tmp/agh/version
+    jq -c 'map(del(.enabled))' /tmp/agh/rewrites > /tmp/agh/r && mv /tmp/agh/r /tmp/agh/rewrites
+    local out
+    out=$(adguard_menu <<< $'n\napex\n\ny\n\nq\n' 2>&1)
+    assert_contains "$out" "Rewrite added: deep.example.org → 192.168.1.10" "confirmed without an enabled field"
+}
+
+t_gum_add_rewrite() {
+    agh_setup
+    seed agh_sites
+    # DNS, Add rewrite (3rd), site (1st: apex), IP typed, Add this rewrite?
+    # yes; Back (7th), Quit.
+    use_gum "0 #8" "0 #3" "0 #1" "0 fd00::30" "0" "0 #7" "0 #10"
+    local out rc calls
+    out=$(printf '\n' | NM_UI=gum timeout 20 bash "$APP" 2>&1); rc=$?
+    assert_eq 0 "$rc" "exits 0"
+    calls=$(gum_calls)
+    assert_contains "$calls" "Add rewrite" "offered"
+    assert_matches "$calls" "gum filter \| --header=Site .*apex +deep\.example\.org" "site picked from the site list"
+    assert_contains "$calls" "gum input | --header=IP address | --prompt=>  | --placeholder=IPv4 or IPv6 address deep.example.org should resolve to | --value=192.168.1.10" \
+        "default IP prefilled"
+    assert_contains "$calls" "gum confirm | --default=true | -- | Add this rewrite?" "summary confirmed"
+    assert_contains "$out" "Rewrite added: deep.example.org → fd00::30" "added"
+    assert_contains "$(add_bodies)" '{"domain":"deep.example.org","answer":"fd00::30"}' "body"
+    assert_eq 1 "$(posts)" "one POST"
+    assert_no_leak "$out" "gum add"
+}
+
+t_gum_add_rewrite_cancel() {
+    agh_setup
+    seed agh_sites
+    local out rc answers
+    RW_BEFORE=$(jq -c . /tmp/agh/rewrites)
+    # Esc at: the site list, the IP, the summary, the wildcard question
+    # (site wild, the 10th; last, so its gum calls are kept).
+    for answers in '"1"' '"0 #1" "1"' '"0 #1" "0 " "1"' '"0 #10" "0 " "1"'; do
+        rm -f /tmp/agh/requests.log /tmp/agh/bodies.log
+        eval "use_gum \"0 #8\" \"0 #3\" $answers \"0 #7\" \"0 #10\""
+        out=$(printf '\n' | NM_UI=gum timeout 20 bash "$APP" 2>&1); rc=$?
+        assert_eq 0 "$rc" "exits 0: $answers"
+        assert_contains "$out" "Cancelled - nothing was changed" "cancelled: $answers"
+        assert_not_contains "$out" "gum failed" "gum not abandoned: $answers"
+        assert_no_write "gum Esc $answers"
+    done
+    assert_contains "$(gum_calls)" "gum confirm | --default=false | -- | Add an exact rewrite anyway?" "wildcard asked, default no"
+}
+
+t_plain_add_rewrite() {
+    agh_setup
+    seed agh_sites
+    use_gum
+    local out
+    # gum installed, but --plain: the basic interface.
+    out=$(printf '8\nn\napex\n\ny\n\nq\nq\n' | NM_UI=gum timeout 20 bash "$APP" --plain 2>&1)
+    assert_contains "$out" "[N] Add rewrite" "listed with its key"
+    assert_contains "$out" "Rewrite added: deep.example.org → 192.168.1.10" "added"
+    assert_not_contains "$(gum_calls)" "gum choose" "gum not used"
+    assert_eq 1 "$(posts)" "one POST"
 }
 
 # ==========================================================

@@ -7,6 +7,8 @@
 # until configured: nothing is sent anywhere until a connection is saved
 # and the user picks an action on the DNS screen. Nothing here runs when
 # sites change. The rewrite views only read (GET); they change nothing.
+# Add rewrite only creates (POST rewrite/add), after a confirmed summary:
+# existing records are never edited, removed or switched on or off.
 #
 # The login password lives in $ADGUARD_SECRET (0600). It reaches curl only
 # as an Authorization header inside a config read from stdin (-K -): never
@@ -23,8 +25,9 @@ AG_MAX_BYTES=1048576
 
 # Filled by adguard_load_config.
 AG_URL="" AG_USER="" AG_ANSWER="" AG_CONFIG_ERROR=""
-# Filled by adguard_request.
-AG_HTTP="" AG_BODY="" AG_ERROR=""
+# Filled by adguard_request. AG_CURL_RC is curl's exit status (empty when
+# curl never ran).
+AG_HTTP="" AG_BODY="" AG_ERROR="" AG_CURL_RC=""
 # Filled by adguard_get_status.
 AG_VERSION="" AG_RUNNING="" AG_PROTECTION=""
 # Filled by adguard_fetch_rewrites: one entry per usable rewrite, sorted by
@@ -146,7 +149,7 @@ adguard_remove_config() {
 # status and AdGuard Home's reply, never from what was sent.
 adguard_request() {
     local method="$1" endpoint="$2" body="$3" auth="" password out code rc
-    AG_HTTP="" AG_BODY="" AG_ERROR=""
+    AG_HTTP="" AG_BODY="" AG_ERROR="" AG_CURL_RC=""
     if ! command -v curl >/dev/null 2>&1; then
         AG_ERROR="curl is not installed (apt install curl)"
         return 1
@@ -175,6 +178,7 @@ adguard_request() {
     code=$(if [[ -n "$auth" ]]; then printf 'header = "Authorization: Basic %s"\n' "$auth"; fi \
         | curl "${args[@]}" "$AG_URL/control/$endpoint" 2>/dev/null)
     rc=$?
+    AG_CURL_RC=$rc
     auth=""
     AG_BODY=$(tr -d '\0' < "$out" 2>/dev/null | head -c "$AG_MAX_BYTES")
     rm -f "$out"
@@ -283,6 +287,27 @@ adguard_fetch_rewrites() {
     AG_RW_DOMAIN=() AG_RW_ANSWER=() AG_RW_STATE=() AG_RW_SKIPPED=0
     AG_RW_GLOBAL=unknown AG_RW_GLOBAL_NOTE=""
     adguard_get_status || return 1
+    adguard_fetch_list || return 1
+
+    if adguard_request GET rewrite/settings; then
+        case "$(jq -r 'if type == "object" and (.enabled | type) == "boolean" then .enabled else "bad" end' <<< "$AG_BODY" 2>/dev/null)" in
+            true) AG_RW_GLOBAL=true ;;
+            false) AG_RW_GLOBAL=false ;;
+            *) AG_RW_GLOBAL_NOTE="unexpected answer from /control/rewrite/settings" ;;
+        esac
+    elif [[ "$AG_HTTP" == 404 || "$AG_HTTP" == 405 ]]; then
+        AG_RW_GLOBAL_NOTE="this AdGuard Home version has no global rewrite switch (added in v0.107.68)"
+    else
+        AG_RW_GLOBAL_NOTE="$AG_ERROR"
+    fi
+    AG_ERROR=""
+}
+
+# Reads every rewrite (GET /control/rewrite/list) into AG_RW_DOMAIN,
+# AG_RW_ANSWER, AG_RW_STATE and AG_RW_SKIPPED. Returns 0, or 1 with
+# AG_ERROR and no records.
+adguard_fetch_list() {
+    AG_RW_DOMAIN=() AG_RW_ANSWER=() AG_RW_STATE=() AG_RW_SKIPPED=0
     adguard_request GET rewrite/list || return 1
 
     local type rows domain answer state
@@ -302,19 +327,6 @@ adguard_fetch_rewrites() {
             AG_RW_DOMAIN+=("$domain") AG_RW_ANSWER+=("$answer") AG_RW_STATE+=("$state")
         done
     } <<< "$rows"
-
-    if adguard_request GET rewrite/settings; then
-        case "$(jq -r 'if type == "object" and (.enabled | type) == "boolean" then .enabled else "bad" end' <<< "$AG_BODY" 2>/dev/null)" in
-            true) AG_RW_GLOBAL=true ;;
-            false) AG_RW_GLOBAL=false ;;
-            *) AG_RW_GLOBAL_NOTE="unexpected answer from /control/rewrite/settings" ;;
-        esac
-    elif [[ "$AG_HTTP" == 404 || "$AG_HTTP" == 405 ]]; then
-        AG_RW_GLOBAL_NOTE="this AdGuard Home version has no global rewrite switch (added in v0.107.68)"
-    else
-        AG_RW_GLOBAL_NOTE="$AG_ERROR"
-    fi
-    AG_ERROR=""
 }
 
 # adguard_match <domain>  -- which fetched rewrites apply to a domain, as
@@ -334,6 +346,112 @@ adguard_match() {
             AG_WILD+=("$i")
         fi
     done
+}
+
+# adguard_ip_key <answer>  -- one spelling per address, for comparing
+# answers: IPv6 written out in full, in lowercase (FD00:0::01 is fd00::1).
+# Anything else comes back lowercased.
+adguard_ip_key() {
+    local ip="${1,,}" head tail h=() t=() g out="" n
+    if ! validate_ipv6 "$ip"; then
+        printf '%s' "$ip"
+        return
+    fi
+    if [[ "$ip" == *.* ]]; then
+        local a b c d
+        IFS=. read -r a b c d <<< "${ip##*:}"
+        ip="${ip%:*}:$(printf '%x:%x' $((a * 256 + b)) $((c * 256 + d)))"
+    fi
+    head="$ip" tail=""
+    [[ "$ip" == *::* ]] && head="${ip%%::*}" tail="${ip#*::}"
+    IFS=: read -ra h <<< "$head"
+    IFS=: read -ra t <<< "$tail"
+    for g in "${h[@]}"; do out+=$(printf '%04x:' "0x$g"); done
+    for ((n = 8 - ${#h[@]} - ${#t[@]}; n > 0; n--)); do out+="0000:"; done
+    for g in "${t[@]}"; do out+=$(printf '%04x:' "0x$g"); done
+    printf '%s' "${out%:}"
+}
+
+adguard_same_answer() { [[ "$(adguard_ip_key "$1")" == "$(adguard_ip_key "$2")" ]]; }
+
+# adguard_has_rewrite <domain> <answer>  -- whether the fetched list holds
+# the rewrite as AdGuard Home stores an added one (domain in lowercase,
+# answer as sent) and it is not disabled.
+adguard_has_rewrite() {
+    local domain="${1,,}" i
+    for i in "${!AG_RW_DOMAIN[@]}"; do
+        [[ "${AG_RW_DOMAIN[i]}" == "$domain" && "${AG_RW_STATE[i]}" != false ]] \
+            && adguard_same_answer "${AG_RW_ANSWER[i]}" "$2" && return 0
+    done
+    return 1
+}
+
+# After a failed request: whether it may still have been carried out. Not
+# when nothing was sent (no connection, TLS refused) or AdGuard Home
+# refused it (3xx/4xx); yes when the answer was cut off or timed out, or
+# the server failed (5xx) while handling it.
+adguard_maybe_applied() {
+    case "$AG_HTTP" in
+        5??) return 0 ;;
+        "") ;;
+        *) return 1 ;;
+    esac
+    case "$AG_CURL_RC" in
+        ""|6|7|35|51|53|54|58|59|60|64|66|77|80|83|90|91) return 1 ;;
+    esac
+    return 0
+}
+
+# adguard_create_rewrite <domain> <answer>
+# Adds one rewrite (POST /control/rewrite/add) and reads the list back to
+# confirm it. Right before sending, the list is read again: if an exact
+# rewrite for the domain is there by now, nothing is sent. Never edits or
+# removes a record, and never sends the POST twice (AdGuard Home does not
+# refuse duplicates). Returns 0 added and confirmed, 1 not added, 2 not sent
+# (an exact rewrite exists), 3 sent but not confirmed.
+adguard_create_rewrite() {
+    local domain="$1" answer="$2" body err
+    if ! adguard_fetch_list; then
+        msg_error "AdGuard Home: $AG_ERROR"
+        msg_warning "Nothing was sent: the rewrites could not be checked"
+        log "AdGuard Home rewrite $domain -> $answer not added: $AG_ERROR"
+        return 1
+    fi
+    adguard_match "$domain"
+    if ((${#AG_EXACT[@]})); then
+        msg_error "An exact rewrite for $domain exists by now - nothing was sent"
+        log "AdGuard Home rewrite $domain -> $answer not added: an exact rewrite appeared"
+        return 2
+    fi
+
+    body=$(jq -nc --arg d "$domain" --arg a "$answer" '{domain: $d, answer: $a}')
+    if ! adguard_request POST rewrite/add "$body"; then
+        err="$AG_ERROR"
+        msg_error "AdGuard Home: $err"
+        if adguard_maybe_applied; then
+            msg_warning "The rewrite may or may not have been added"
+            ui_hint "Check Your sites' DNS before trying again: AdGuard Home does not refuse duplicates."
+            log "AdGuard Home rewrite $domain -> $answer: result unknown ($err)"
+            return 3
+        fi
+        msg_warning "The rewrite was not added"
+        log "AdGuard Home rewrite $domain -> $answer not added: $err"
+        return 1
+    fi
+    log "AdGuard Home rewrite $domain -> $answer sent (HTTP $AG_HTTP)"
+
+    if ! adguard_fetch_list; then
+        msg_warning "AdGuard Home accepted the rewrite, but it could not be confirmed: $AG_ERROR"
+    elif ! adguard_has_rewrite "$domain" "$answer"; then
+        msg_warning "AdGuard Home accepted the rewrite, but $domain $SYM_ARROW $answer is not in its list"
+    else
+        msg_success "Rewrite added: $domain $SYM_ARROW $answer"
+        log "AdGuard Home rewrite $domain -> $answer added and confirmed"
+        return 0
+    fi
+    ui_hint "Check Your sites' DNS before adding it again: AdGuard Home does not refuse duplicates."
+    log "AdGuard Home rewrite $domain -> $answer not confirmed"
+    return 3
 }
 
 # adguard_test -- GET /control/status and shows the version and DNS state.
@@ -408,7 +526,8 @@ adguard_menu() {
         items=()
         if ((configured == 0)); then
             items+=("s|Your sites' DNS|rewrites for your sites' domains (read-only)"
-                "a|All rewrites|every rewrite in AdGuard Home (read-only)")
+                "a|All rewrites|every rewrite in AdGuard Home (read-only)"
+                "n|Add rewrite|point a site's domain to an IP address")
         fi
         items+=("c|Connection|AdGuard Home address, login and default IP")
         if ((configured == 0)); then
@@ -420,6 +539,7 @@ adguard_menu() {
         case "$UI_REPLY" in
             s) adguard_sites_screen ;;
             a) adguard_rewrites_screen ;;
+            n) adguard_add_screen ;;
             c) adguard_connection_prompt ;;
             t) adguard_test_screen ;;
             r) adguard_remove_prompt ;;
@@ -614,6 +734,125 @@ adguard_rewrites_screen() {
         ui_hint "a record being listed does not mean NGINX Manager created it. Read only: nothing was changed."
     fi
     pause
+}
+
+# ==========================================================
+# ADD REWRITE
+# ==========================================================
+# Asks for a site and an IP address, shows what AdGuard Home already has
+# for the site's domain and, after a confirmed summary, adds one exact
+# rewrite. Any exact rewrite for the domain stops it: existing records are
+# never changed here. AdGuard Home is contacted only once the IP is given.
+adguard_add_screen() {
+    ui_screen "DNS (AdGuard Home)" "Add rewrite"
+    adguard_require_config || { pause; return 1; }
+    if ! jq empty "$SITES_DB" >/dev/null 2>&1; then
+        msg_error "The site database $SITES_DB cannot be read (invalid JSON)"
+        pause
+        return 1
+    fi
+    if [[ -z "$(sites_tsv)" ]]; then
+        echo "  No sites configured yet - no domain to add a rewrite for."
+        pause
+        return 1
+    fi
+    echo "Points one of your sites' domains to an IP address, normally this server's."
+    echo "Nothing is changed until you confirm the summary."
+    ui_cancel_hint
+
+    local site domain answer i
+    select_site "Site" || { ui_aborted $?; pause; return 1; }
+    site="$UI_REPLY"
+    domain=$(db_get "$site" domain)
+    if ! validate_domain "$domain"; then
+        msg_error "Site $site has no valid domain name - no rewrite can be added for it"
+        pause
+        return 1
+    fi
+
+    echo
+    ui_kv "Domain" "$domain"
+    while true; do
+        ui_input "IP address" "$AG_ANSWER" "IPv4 or IPv6 address $domain should resolve to" || { ui_aborted $?; pause; return 1; }
+        answer="$UI_REPLY"
+        adguard_valid_ip "$answer" && break
+        msg_error "Invalid IP address - enter an IPv4 or IPv6 address"
+    done
+
+    echo
+    adguard_fetch_view || { pause; return 1; }
+    adguard_match "$domain"
+    if ((${#AG_EXACT[@]})); then
+        adguard_add_blocked "$domain" "$answer"
+        pause
+        return 1
+    fi
+    if ((${#AG_WILD[@]})); then
+        echo
+        msg_warning "No exact rewrite for $domain, but a wildcard rewrite may already answer for it:"
+        for i in "${AG_WILD[@]}"; do
+            printf '        %s %s %s%s\n' "${AG_RW_DOMAIN[i]}" "$SYM_ARROW" "${AG_RW_ANSWER[i]}" \
+                "$(adguard_state_suffix "${AG_RW_STATE[i]}")"
+        done
+        ui_hint "An exact rewrite takes precedence over the wildcard, for $domain only."
+        echo
+        if ! confirm "Add an exact rewrite anyway?" n; then
+            msg_warning "Cancelled - nothing was changed"
+            pause
+            return 1
+        fi
+    fi
+
+    ui_section "Summary"
+    ui_kv "Site" "$site"
+    ui_kv "Domain" "$domain"
+    ui_kv "IP address" "$answer"
+    [[ "$domain" != "${domain,,}" ]] && ui_hint "AdGuard Home stores the domain in lowercase: ${domain,,}"
+    [[ -n "$AG_ANSWER" ]] && ! adguard_same_answer "$answer" "$AG_ANSWER" \
+        && ui_hint "For this rewrite only: the default IP stays $AG_ANSWER."
+    [[ "$AG_RW_GLOBAL" == false ]] \
+        && ui_hint "Rewrites are turned off in AdGuard Home: this one applies once they are turned on."
+    ui_hint "Adds one rewrite to AdGuard Home; nothing else there or in nginx is changed."
+    echo
+    if ! confirm "Add this rewrite?" y; then
+        msg_warning "Cancelled - nothing was changed"
+        pause
+        return 1
+    fi
+    echo
+    ui_run adguard_create_rewrite "$domain" "$answer"
+    pause
+}
+
+# adguard_add_blocked <domain> <answer>  -- why AG_EXACT stops Add rewrite.
+adguard_add_blocked() {
+    local domain="$1" answer="$2" first="${AG_EXACT[0]}" i
+    echo
+    if ((${#AG_EXACT[@]} > 1)); then
+        msg_warning "$domain already has ${#AG_EXACT[@]} exact rewrites - they need a manual review:"
+    elif ! adguard_same_answer "${AG_RW_ANSWER[first]}" "$answer"; then
+        msg_warning "$domain already has a rewrite with another answer - it was not changed:"
+    elif [[ "${AG_RW_STATE[first]}" == false ]]; then
+        msg_warning "The rewrite already exists, but is disabled in AdGuard Home:"
+    else
+        msg_success "The rewrite already exists - nothing to add:"
+    fi
+    for i in "${AG_EXACT[@]}"; do
+        printf '        %s %s %s%s\n' "${AG_RW_DOMAIN[i]}" "$SYM_ARROW" "${AG_RW_ANSWER[i]}" \
+            "$(adguard_state_suffix "${AG_RW_STATE[i]}")"
+    done
+    echo
+    if ((${#AG_EXACT[@]} > 1)); then
+        ui_hint "Which of them should stay cannot be decided here, and a listed record was not"
+        ui_hint "necessarily created by NGINX Manager. Review them in AdGuard Home (Filters › DNS rewrites)."
+    elif ! adguard_same_answer "${AG_RW_ANSWER[first]}" "$answer"; then
+        ui_hint "Changing an existing rewrite is not available here yet; until then, edit it in"
+        ui_hint "AdGuard Home (Filters › DNS rewrites)."
+    elif [[ "${AG_RW_STATE[first]}" == false ]]; then
+        ui_hint "Turning a rewrite on is not available here yet; until then, enable it in"
+        ui_hint "AdGuard Home (Filters › DNS rewrites)."
+    fi
+    ui_hint "Nothing was sent: Add rewrite never changes existing records."
 }
 
 adguard_remove_prompt() {
