@@ -17,15 +17,24 @@
 #   add-store  JSON list POST rewrite/add appends instead of the posted
 #              record ("[]": accepted, nothing stored)
 #   after-add/ state files moved into /tmp/agh once a POST rewrite/add
-#              succeeds (e.g. a list read that fails only afterwards)
+#              succeeds (e.g. a list read that fails only afterwards);
+#              after.<endpoint>/ the same for any write
+#   late-rc.<endpoint>  carry the write out, then exit with this status (the
+#              answer is lost: a timeout or a dropped connection afterwards)
 #   rewrite-settings  body of GET rewrite/settings (default
 #              {"enabled":true}); versions before v0.107.68 answer 404
 # Every call is logged: its arguments to /tmp/mock-calls.log ("curl ..."),
 # "<METHOD> <endpoint> auth=<none|ok|bad>" to /tmp/agh/requests.log, and
 # for a request with a body "<endpoint><TAB><content-type><TAB><body>" to
-# /tmp/agh/bodies.log. POST rewrite/add does what AdGuard Home does: 400
-# for a body it cannot decode, else the record is appended to rewrites
-# with the domain lowercased and the answer as sent, and 200 with no body.
+# /tmp/agh/bodies.log. The writes do what AdGuard Home does: 400 for a body
+# it cannot decode, otherwise 200 with no body.
+#   POST rewrite/add     appends the record, domain lowercased, answer as sent
+#   PUT rewrite/update   (v0.107.33+; 404 before) replaces the FIRST record
+#                        whose domain and answer equal the target's exactly
+#                        (none: 400 "target rule not found") with the update,
+#                        domain lowercased; no "enabled" keeps the old value
+#   POST rewrite/delete  removes EVERY record whose domain and answer equal
+#                        the posted ones exactly; 200 even when none did
 # The -K config read from stdin (where the login is) is never stored.
 S=/tmp/agh
 echo "curl $*" >> /tmp/mock-calls.log
@@ -79,6 +88,20 @@ if [[ "$method" == POST || "$method" == PUT ]] && ((has_body)) && [[ "$ctype" !=
     reply 415 "only application/json is allowed"
 fi
 
+stored() { cat "$S/rewrites" 2>/dev/null || echo '[]'; }
+store() { printf '%s\n' "$1" > "$S/rewrites.new" && mv "$S/rewrites.new" "$S/rewrites"; }
+older_than() { [[ "$(printf '%s\n' "$1" "$version" | sort -V | head -1)" != "$1" ]]; }
+# After a write was carried out: after.<endpoint>, late-rc.<endpoint>, 200.
+written() { # endpoint
+    local f="${1//\//_}"
+    if [[ -d "$S/after.$f" ]]; then
+        cp -r "$S/after.$f/." "$S/" && rm -rf "$S/after.$f"
+    fi
+    [[ -f "$S/late-rc.$f" ]] && exit "$(cat "$S/late-rc.$f")"
+    reply 200 ""
+}
+entry='type == "object" and (.domain | type) == "string" and (.answer | type) == "string"'
+
 case "$method $endpoint" in
     "GET status")
         reply 200 "$(jq -nc --arg v "$version" \
@@ -104,9 +127,29 @@ case "$method $endpoint" in
         if [[ -d "$S/after-add" ]]; then
             cp -r "$S/after-add/." "$S/" && rm -rf "$S/after-add"
         fi
-        reply 200 ""
+        written rewrite/add
+        ;;
+    "PUT rewrite/update")
+        older_than v0.107.33 && reply 404 "404 page not found"
+        jq -e "type == \"object\" and (.target | $entry) and (.update | $entry)" <<< "$data" >/dev/null 2>&1 \
+            || reply 400 "json.Decode: invalid rewrite update"
+        i=$(jq --argjson t "$(jq -c .target <<< "$data")" \
+            '(. // []) | map(.domain == $t.domain and .answer == $t.answer) | index(true) // -1' <<< "$(stored)")
+        ((i < 0)) && reply 400 "target rule not found"
+        new=$(jq -c --argjson old "$(jq -c ".[$i]" <<< "$(stored)")" '.update
+            | {domain: (.domain | ascii_downcase), answer, enabled: (if .enabled == null then $old.enabled else .enabled end)}
+            | if .enabled == null then del(.enabled) else . end' <<< "$data")
+        store "$(jq -c --argjson i "$i" --argjson new "$new" '.[$i] = $new' <<< "$(stored)")"
+        written rewrite/update
+        ;;
+    "POST rewrite/delete")
+        jq -e "$entry" <<< "$data" >/dev/null 2>&1 || reply 400 "json.Decode: invalid rewrite entry"
+        store "$(jq -c --argjson t "$data" \
+            '(. // []) | map(select((.domain == $t.domain and .answer == $t.answer) | not))' <<< "$(stored)")"
+        written rewrite/delete
         ;;
     *" status"|*" rewrite/list"|*" rewrite/settings") reply 405 "only method GET is allowed" ;;
-    *" rewrite/add") reply 405 "only method POST is allowed" ;;
+    *" rewrite/add"|*" rewrite/delete") reply 405 "only method POST is allowed" ;;
+    *" rewrite/update") older_than v0.107.33 || reply 405 "only method PUT is allowed" ;;
 esac
 reply 404 "404 page not found"
