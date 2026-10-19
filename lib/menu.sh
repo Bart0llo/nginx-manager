@@ -22,6 +22,7 @@ main_menu() {
             "5|Plugins|enable, disable and configure plugins" \
             "6|Settings|manager configuration and interface" \
             "7|Logs & diagnostics|manager log, backups, nginx -t" \
+            "8|DNS (AdGuard Home)|DNS rewrites for your sites' domains" \
             "h|Help|keys, options and where things are" \
             "q|Quit|"
         case $? in
@@ -37,6 +38,7 @@ main_menu() {
             5) plugins_menu ;;
             6) settings_screen ;;
             7) diagnostics_menu ;;
+            8) adguard_menu ;;
             h) help_screen ;;
             q) exit 0 ;;
         esac

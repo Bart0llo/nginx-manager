@@ -24,6 +24,9 @@ PLUGIN_DIR="/usr/local/lib/nginx-manager/plugins"
 PLUGINS_ENABLED="$MANAGER_DIR/plugins.enabled"
 PLUGIN_CONF_DIR="$MANAGER_DIR/plugins"
 PLUGIN_SECRETS_DIR="$CF_DIR"
+# AdGuard Home connection (lib/adguard.sh): settings and login password.
+ADGUARD_CONF="$MANAGER_DIR/adguard.conf"
+ADGUARD_SECRET="$CF_DIR/adguard.password"
 
 # ==========================================================
 # COLORS
@@ -73,6 +76,53 @@ require_openssl() {
         return 1
     fi
     return 0
+}
+
+require_curl() {
+    if ! command -v curl >/dev/null 2>&1; then
+        echo -e "${RED}curl is not installed. Install it with: apt install curl${NC}"
+        return 1
+    fi
+    return 0
+}
+
+# ==========================================================
+# SECRETS
+# ==========================================================
+# secret_write <file> <label>   (value on stdin)
+# Stores one secret under $CF_DIR. The directories are 0700 and the file is
+# 0600 before the value is written, then atomically moved into place. The
+# value is never printed or logged; <label> names it in messages.
+# Returns 0 saved, 1 failed, 2 empty value.
+secret_write() {
+    local file="$1" label="$2" dir tmp
+    dir=$(dirname "$file")
+    if [[ -L "$dir" || ( -e "$dir" && ! -d "$dir" ) ]]; then
+        msg_error "$dir is not a directory; secret not saved"
+        return 1
+    fi
+    if ! mkdir -p -m 700 "$CF_DIR" "$dir" || ! chmod 700 "$CF_DIR" "$dir"; then
+        msg_error "Failed to create $dir"
+        return 1
+    fi
+
+    if ! tmp=$(mktemp -p "$dir") || ! chmod 600 "$tmp" || ! cat > "$tmp"; then
+        [[ -n "$tmp" ]] && rm -f "$tmp"
+        msg_error "Failed to write $label"
+        log "Secret not saved: $label (write failed)"
+        return 1
+    fi
+    if [[ ! -s "$tmp" ]]; then
+        rm -f "$tmp"
+        msg_error "Secret value cannot be empty"
+        return 2
+    fi
+    if ! mv -fT "$tmp" "$file"; then
+        rm -f "$tmp"
+        msg_error "Failed to write $label"
+        log "Secret not saved: $label (move failed)"
+        return 1
+    fi
 }
 
 # ==========================================================

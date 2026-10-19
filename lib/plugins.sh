@@ -633,12 +633,12 @@ plugin_site_set() {
 }
 
 # plugin_secret_set <id> <name>   (value on stdin)
-# Stores one secret as $PLUGIN_SECRETS_DIR/<id>/<name>. The directories are
-# 0700 and the file is 0600 before the value is written, then atomically
-# moved into place. The value is never printed or logged.
+# Stores one secret as $PLUGIN_SECRETS_DIR/<id>/<name> with secret_write
+# (0700 directories, 0600 file, atomic). The value is never printed or
+# logged.
 # Returns 0 saved, 1 failed, 2 invalid input.
 plugin_secret_set() {
-    local id="$1" name="$2" dir="$PLUGIN_SECRETS_DIR/$1" tmp
+    local id="$1" name="$2" rc
     if ! validate_plugin_id "$id"; then
         msg_error "Invalid plugin ID: '$id'"
         return 2
@@ -652,32 +652,9 @@ plugin_secret_set() {
         msg_error "Invalid secret name: '$name' (letters, numbers, . _ - ; not starting with .)"
         return 2
     fi
-    if [[ -L "$dir" || ( -e "$dir" && ! -d "$dir" ) ]]; then
-        msg_error "$dir is not a directory; secret not saved"
-        return 1
-    fi
-    if ! mkdir -p -m 700 "$PLUGIN_SECRETS_DIR" "$dir" || ! chmod 700 "$PLUGIN_SECRETS_DIR" "$dir"; then
-        msg_error "Failed to create $dir"
-        return 1
-    fi
-
-    if ! tmp=$(mktemp -p "$dir") || ! chmod 600 "$tmp" || ! cat > "$tmp"; then
-        [[ -n "$tmp" ]] && rm -f "$tmp"
-        msg_error "Failed to write secret '$name' for plugin '$id'"
-        log "Plugin secret not saved: $id/$name (write failed)"
-        return 1
-    fi
-    if [[ ! -s "$tmp" ]]; then
-        rm -f "$tmp"
-        msg_error "Secret value cannot be empty"
-        return 2
-    fi
-    if ! mv -fT "$tmp" "$dir/$name"; then
-        rm -f "$tmp"
-        msg_error "Failed to write secret '$name' for plugin '$id'"
-        log "Plugin secret not saved: $id/$name (move failed)"
-        return 1
-    fi
+    secret_write "$PLUGIN_SECRETS_DIR/$id/$name" "secret '$name' for plugin '$id'"
+    rc=$?
+    ((rc == 0)) || return $rc
     msg_success "Secret '$name' saved for plugin '$id'"
     log "Plugin secret saved: $id/$name"
 }

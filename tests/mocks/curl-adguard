@@ -1,0 +1,71 @@
+#!/bin/bash
+# Fake curl standing in for AdGuard Home's web API (lib/adguard.sh tests),
+# following AdGuard Home's own handlers: a login is only checked when users
+# exist, a bad or missing one gets 401 with an empty body, and POST/PUT
+# with a body but no "Content-Type: application/json" gets 415.
+# Installed as curl by use_adguard (tests/lib/harness.sh). State, /tmp/agh:
+#   auth       "user:password": a login is required (absent: no users)
+#   version    version reported by /control/status (default v0.107.79)
+#   running    "false": the DNS server is not running
+#   curl-rc    exit with this status instead (timeout, connection refused)
+#   status     answer every request with this HTTP status ...
+#   body       ... and this body (alone: status 200)
+# Every call is logged: its arguments to /tmp/mock-calls.log ("curl ..."),
+# and "<METHOD> <endpoint> auth=<none|ok|bad>" to /tmp/agh/requests.log.
+# The -K config read from stdin (where the login is) is never stored.
+S=/tmp/agh
+echo "curl $*" >> /tmp/mock-calls.log
+mkdir -p "$S"
+
+config="" method=GET out="" fmt="" url="" ctype="" has_body=0
+while (($#)); do
+    case "$1" in
+        -K|--config) [[ "$2" == - ]] && config=$(cat); shift ;;
+        -o) out="$2"; shift ;;
+        -w) fmt="$2"; shift ;;
+        -X) method="$2"; shift ;;
+        -H) [[ "${2,,}" == content-type:* ]] && ctype="${2#*: }"; shift ;;
+        --data-binary) has_body=1; shift ;;
+        --proto|--connect-timeout|--max-time|--max-filesize) shift ;;
+        http://*|https://*) url="$1" ;;
+    esac
+    shift
+done
+
+auth=none
+if [[ "$config" =~ Authorization:\ Basic\ ([A-Za-z0-9+/=]+) ]]; then
+    auth=bad
+    [[ -f "$S/auth" && "$(printf '%s' "${BASH_REMATCH[1]}" | base64 -d)" == "$(cat "$S/auth")" ]] && auth=ok
+fi
+path="${url#*://}"
+path="/${path#*/}"
+endpoint=""
+[[ "$path" == */control/* ]] && endpoint="${path#*/control/}"
+echo "$method ${endpoint:-$path} auth=$auth" >> "$S/requests.log"
+
+[[ -f "$S/curl-rc" ]] && exit "$(cat "$S/curl-rc")"
+
+reply() { # status body
+    [[ -n "$out" ]] && printf '%s' "$2" > "$out"
+    [[ "$fmt" == *http_code* ]] && printf '%s' "$1"
+    exit 0
+}
+
+if [[ -f "$S/status" || -f "$S/body" ]]; then
+    reply "$(cat "$S/status" 2>/dev/null || echo 200)" "$(cat "$S/body" 2>/dev/null)"
+fi
+[[ -f "$S/auth" && "$auth" != ok ]] && reply 401 ""
+if [[ "$method" == POST || "$method" == PUT ]] && ((has_body)) && [[ "$ctype" != application/json ]]; then
+    reply 415 "only application/json is allowed"
+fi
+
+case "$method $endpoint" in
+    "GET status")
+        reply 200 "$(jq -nc --arg v "$(cat "$S/version" 2>/dev/null || echo v0.107.79)" \
+            --argjson r "$(cat "$S/running" 2>/dev/null || echo true)" \
+            '{version:$v, running:$r, protection_enabled:true, dns_addresses:["127.0.0.1"],
+              dns_port:53, http_port:80, language:"en", protection_disabled_duration:0}')"
+        ;;
+    *" status") reply 405 "only method GET is allowed" ;;
+esac
+reply 404 "404 page not found"

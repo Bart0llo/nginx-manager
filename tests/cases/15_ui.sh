@@ -247,7 +247,7 @@ t_gum_menu_arguments() {
 
 t_gum_add_site() {
     fixture_configured
-    use_gum "0 #3" "0 app" "0 app.lan.example.com" "0 127.0.0.1:8080" "0 #2" "0" "0" "0 #9"
+    use_gum "0 #3" "0 app" "0 app.lan.example.com" "0 127.0.0.1:8080" "0 #2" "0" "0" "0 #10"
     local out rc
     out=$(printf '\n' | NM_UI=gum timeout 20 bash "$APP" 2>&1); rc=$?
     assert_eq 0 "$rc" "exits 0"
@@ -277,7 +277,7 @@ t_gum_cancel_changes_nothing() {
 
 t_gum_backend_failure_shown() {
     fixture_configured
-    use_gum "0 #3" "0 app" "0 app.other.com" "0 127.0.0.1:8080" "0 #2" "0" "0 #9"
+    use_gum "0 #3" "0 app" "0 app.other.com" "0 127.0.0.1:8080" "0 #2" "0" "0 #10"
     local out
     out=$(printf '\n' | NM_UI=gum timeout 20 bash "$APP" 2>&1)
     assert_contains "$out" "Could not create site" "failure shown"
@@ -290,7 +290,7 @@ t_gum_delete_needs_exact_name() {
     fixture_configured
     seed "new_site app http; enable_site app"
     # Sites, open app, Delete, wrong name; Back, Esc out of the list, Quit.
-    use_gum "0 #2" "0 #1" "0 #6" "0 App" "0 #7" "1" "0 #9"
+    use_gum "0 #2" "0 #1" "0 #6" "0 App" "0 #7" "1" "0 #10"
     run_app_gum() { printf '\n' | NM_UI=gum timeout 20 bash "$APP" 2>&1; }
     local out
     out=$(run_app_gum)
@@ -298,11 +298,11 @@ t_gum_delete_needs_exact_name() {
     assert_db 'has("app")' "site kept"
     assert_contains "$(gum_calls)" "gum input | --header=Type the site name to confirm deletion" "typed confirmation via gum"
     # Esc at the confirmation also keeps the site.
-    use_gum "0 #2" "0 #1" "0 #6" "1" "0 #7" "1" "0 #9"
+    use_gum "0 #2" "0 #1" "0 #6" "1" "0 #7" "1" "0 #10"
     out=$(run_app_gum)
     assert_contains "$out" "Cancelled - nothing was changed" "Esc cancels"
     assert_db 'has("app")' "site still kept"
-    use_gum "0 #2" "0 #1" "0 #6" "0 app" "1" "0 #9"
+    use_gum "0 #2" "0 #1" "0 #6" "0 app" "1" "0 #10"
     out=$(run_app_gum)
     assert_contains "$out" "Site 'app' deleted" "exact name deletes"
     assert_db 'has("app") | not' "site gone"
@@ -312,13 +312,13 @@ t_gum_confirm_defaults() {
     fixture_configured
     seed "new_site app http; enable_site app"
     # Sites, open app, Regenerate, answer No; Back, Esc, Quit.
-    use_gum "0 #2" "0 #1" "0 #4" "1" "0 #7" "1" "0 #9"
+    use_gum "0 #2" "0 #1" "0 #4" "1" "0 #7" "1" "0 #10"
     printf '\n' | NM_UI=gum timeout 20 bash "$APP" >/dev/null 2>&1
     assert_contains "$(gum_calls)" "gum confirm | --default=false | -- | Regenerate configuration for 'app'?" \
         "default-no question preselects No"
     assert_eq 0 "$(ls "$MANAGER_DIR/backups" | wc -l)" "declined: nothing regenerated"
     # Ctrl-C at a yes/no question is "no".
-    use_gum "0 #2" "0 #1" "0 #2" "130" "0 #7" "1" "0 #9"
+    use_gum "0 #2" "0 #1" "0 #2" "130" "0 #7" "1" "0 #10"
     printf '\n' | NM_UI=gum timeout 20 bash "$APP" >/dev/null 2>&1
     assert_symlink "$SITES_ENABLED/app.conf" "Ctrl-C at 'Disable site?' keeps it enabled"
 }
@@ -327,7 +327,7 @@ t_gum_site_list_searchable() {
     fixture_configured
     seed "new_site app http; enable_site app; new_site web http"
     # Sites, Esc out of the list, Quit.
-    use_gum "0 #2" "1" "0 #9"
+    use_gum "0 #2" "1" "0 #10"
     NM_UI=gum timeout 20 bash "$APP" </dev/null >/dev/null 2>&1
     local call
     call=$(gum_calls | grep '^gum filter')
@@ -421,13 +421,13 @@ t_gum_values_starting_with_dash() {
 # the basic interface. With everything on the terminal it uses gum.
 t_gum_auto_mode_needs_terminal_stderr() {
     fixture_configured
-    use_gum "0 #9"
+    use_gum "0 #10"
     { sleep 1; printf '6\n'; sleep 1; printf '\n'; sleep 1; printf 'q\n'; sleep 1; } \
         | timeout 30 script -qec "env TERM=xterm bash $APP 2>/tmp/stderr.log" /dev/null >/tmp/tty.out 2>&1
     assert_contains "$(cat /tmp/tty.out)" "Basic (not running in a terminal)" "stderr redirected: basic interface"
     assert_not_contains "$(gum_calls)" "gum choose" "gum not used"
 
-    use_gum "0 #9"
+    use_gum "0 #10"
     run_on_tty "" >/dev/null
     assert_contains "$(gum_calls)" "gum choose | --header=Main menu" "full terminal: gum used automatically"
 }
@@ -443,7 +443,7 @@ t_gum_version_probe_failures() {
     out=$(printf '6\n\nq\n' | NM_UI=gum timeout 20 bash "$APP" 2>&1)
     assert_contains "$out" "gum version could not be determined" "failing probe: fallback even with a version printed"
     echo "gum version v2.0.2 (1a2b3c4)" > /tmp/gum-version; echo 0 > /tmp/gum-version-rc
-    use_gum "0 #6" "1" "0 #9"
+    use_gum "0 #6" "1" "0 #10"
     out=$(printf '\n' | NM_UI=gum timeout 20 bash "$APP" 2>&1)
     assert_matches "$out" '^  Prompts +✓ gum 2\.0\.2 \(enhanced\)$' "v2 accepted"
 }

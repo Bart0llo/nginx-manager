@@ -151,6 +151,18 @@ gum_calls() { cat /tmp/gum-calls.log 2>/dev/null; }
 
 mock_rc() { echo "$2" > "$MOCK_RC/$1"; }
 
+# Installs the AdGuard Home API mock (tests/mocks/curl-adguard) as curl.
+# With a login, AdGuard Home requires it. See the mock for its state files.
+use_adguard() { # [user:password]
+    cp /src/tests/mocks/curl-adguard "$MOCK_BIN/curl"
+    chmod 755 "$MOCK_BIN/curl"
+    mkdir -p /tmp/agh
+    [[ -n "$1" ]] && printf '%s' "$1" > /tmp/agh/auth
+    : > /tmp/agh/requests.log
+}
+
+agh_requests() { cat /tmp/agh/requests.log 2>/dev/null; }
+
 # ==========================================================
 # STATE
 # ==========================================================
@@ -171,7 +183,7 @@ reset_state() {
         /etc/letsencrypt/live/soon.example.com \
         /tmp/nm-plugins* /tmp/plugin-calls.log /usr/local/lib/nginx-manager \
         /tmp/gum-script /tmp/gum-calls.log /tmp/gum-version /tmp/gum-version-rc \
-        /tmp/mock-gh /tmp/mock-curl-hook /tmp/nm-release \
+        /tmp/mock-gh /tmp/mock-curl-hook /tmp/nm-release /tmp/agh \
         /tmp/nm-root /tmp/nm-src /usr/local/bin/.nginx-manager.new.*
     rm -f "$SITES_AVAILABLE"/*.conf "$SITES_ENABLED"/*.conf \
         /etc/nginx/snippets/proxy-common.conf /etc/nginx/snippets/tls-common.conf
@@ -202,6 +214,19 @@ fixture_cloudflare() {
     chmod 700 "$MANAGER_DIR/secrets"
     echo "dns_cloudflare_api_token = test-token" > "$MANAGER_DIR/secrets/cloudflare.ini"
     chmod 600 "$MANAGER_DIR/secrets/cloudflare.ini"
+}
+
+# A saved AdGuard Home connection; no user means no login.
+fixture_adguard() { # [url] [user] [password] [default-answer]
+    mkdir -p "$MANAGER_DIR/secrets"
+    chmod 700 "$MANAGER_DIR/secrets"
+    printf '%s\n' "URL=${1:-http://dns.lan.example.com}" "USERNAME=$2" \
+        "DEFAULT_ANSWER=${4:-192.168.1.10}" > "$MANAGER_DIR/adguard.conf"
+    chmod 600 "$MANAGER_DIR/adguard.conf"
+    if [[ -n "$3" ]]; then
+        printf '%s' "$3" > "$MANAGER_DIR/secrets/adguard.password"
+        chmod 600 "$MANAGER_DIR/secrets/adguard.password"
+    fi
 }
 
 # ==========================================================
