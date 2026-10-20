@@ -1169,6 +1169,67 @@ t_add_create_refusals() {
     done
 }
 
+# A record that cannot be read might be an exact rewrite for the domain, so
+# Add rewrite cannot rule out a duplicate: nothing is sent, on the screen or
+# at the re-check right before the POST. The unreadable records are left
+# alone.
+t_add_rewrite_incomplete_list() {
+    agh_add_setup
+    local bad out
+    while IFS= read -r bad; do
+        reset_agh; agh_setup
+        jq -c --argjson bad "$bad" '. + [$bad]' /tmp/agh/rewrites > /tmp/agh/r && mv /tmp/agh/r /tmp/agh/rewrites
+        RW_BEFORE=$(rw_now)
+        : > /var/log/nginx-manager/manager.log
+        out=$(adguard_menu <<< $'n\napex\n\ny\n\nq\n' 2>&1)
+        assert_contains "$out" "1 record(s) in AdGuard Home could not be read" "screen explained: $bad"
+        assert_contains "$out" "nothing was sent" "screen: nothing sent: $bad"
+        assert_contains "$out" "The rewrite was not added" "screen: not added: $bad"
+        assert_not_contains "$out" "Rewrite added" "screen: not claimed: $bad"
+        assert_not_contains "$out" "Add this rewrite?" "screen: stopped before the summary: $bad"
+        assert_eq $'GET status auth=ok\nGET rewrite/list auth=ok\nGET rewrite/settings auth=ok' \
+            "$(agh_requests)" "screen: only the read: $bad"
+        assert_no_write "screen: $bad"
+        assert_not_contains "$(cat /var/log/nginx-manager/manager.log)" "sent (HTTP" "screen: no write logged: $bad"
+        assert_no_leak "$out" "screen: $bad"
+
+        reset_agh; agh_setup; adguard_load_config
+        jq -c --argjson bad "$bad" '. + [$bad]' /tmp/agh/rewrites > /tmp/agh/r && mv /tmp/agh/r /tmp/agh/rewrites
+        RW_BEFORE=$(rw_now)
+        out=$(adguard_create_rewrite deep.example.org 192.168.1.10 2>&1)
+        assert_eq 2 $? "re-check: refused: $bad"
+        assert_contains "$out" "1 record(s) in AdGuard Home could not be read" "re-check explained: $bad"
+        assert_contains "$out" "The rewrite was not added" "re-check: not added: $bad"
+        assert_eq "GET rewrite/list auth=ok" "$(agh_requests)" "re-check: one read, no POST: $bad"
+        assert_no_write "re-check: $bad"
+        assert_contains "$(cat /var/log/nginx-manager/manager.log)" \
+            "AdGuard Home rewrite deep.example.org -> 192.168.1.10 not added: 1 unreadable record(s)" "re-check logged: $bad"
+    done <<'EOF'
+7
+{"domain":"deep.example.org"}
+{"domain":"deep.example.org","answer":["192.168.1.10"]}
+{"domain":"deep.example.org","answer":"192.168.1.77","enabled":"yes"}
+{"domain":"\u0007","answer":"192.168.1.77"}
+EOF
+
+    # Every unreadable record is counted.
+    reset_agh; agh_setup; adguard_load_config
+    jq -c '. + [7, {"answer":"192.168.1.10"}]' /tmp/agh/rewrites > /tmp/agh/r && mv /tmp/agh/r /tmp/agh/rewrites
+    RW_BEFORE=$(rw_now)
+    out=$(adguard_create_rewrite deep.example.org 192.168.1.10 2>&1)
+    assert_eq 2 $? "two unreadable: refused"
+    assert_contains "$out" "2 record(s) in AdGuard Home could not be read" "two unreadable: counted"
+    assert_no_write "two unreadable"
+
+    # With the list complete again, the same add goes through.
+    reset_agh; agh_setup
+    RW_BEFORE=$(rw_now)
+    out=$(adguard_menu <<< $'n\napex\n\ny\n\nq\n' 2>&1)
+    assert_contains "$out" "Rewrite added: deep.example.org → 192.168.1.10" "complete list: added"
+    assert_eq 1 "$(posts)" "complete list: one POST"
+    assert_others_kept "complete list"
+}
+
 # The screen with failures at the check or the POST.
 t_add_screen_errors() {
     agh_add_setup

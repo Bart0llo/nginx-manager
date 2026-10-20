@@ -418,10 +418,11 @@ adguard_maybe_applied() {
 # adguard_create_rewrite <domain> <answer>
 # Adds one rewrite (POST /control/rewrite/add) and reads the list back to
 # confirm it. Right before sending, the list is read again: if an exact
-# rewrite for the domain is there by now, nothing is sent. Never edits or
-# removes a record, and never sends the POST twice (AdGuard Home does not
-# refuse duplicates). Returns 0 added and confirmed, 1 not added, 2 not sent
-# (an exact rewrite exists), 3 sent but not confirmed.
+# rewrite for the domain is there by now, or a record cannot be read (it
+# might be one), nothing is sent. Never edits or removes a record, and never
+# sends the POST twice (AdGuard Home does not refuse duplicates). Returns 0
+# added and confirmed, 1 not added, 2 not sent (an exact rewrite exists or
+# cannot be ruled out), 3 sent but not confirmed.
 adguard_create_rewrite() {
     local domain="$1" answer="$2" body err
     if ! adguard_fetch_list; then
@@ -429,6 +430,11 @@ adguard_create_rewrite() {
         msg_warning "Nothing was sent: the rewrites could not be checked"
         log "AdGuard Home rewrite $domain -> $answer not added: $AG_ERROR"
         return 1
+    fi
+    if ! adguard_list_complete; then
+        msg_warning "The rewrite was not added"
+        log "AdGuard Home rewrite $domain -> $answer not added: $AG_RW_SKIPPED unreadable record(s)"
+        return 2
     fi
     adguard_match "$domain"
     if ((${#AG_EXACT[@]})); then
@@ -963,8 +969,9 @@ adguard_rewrites_screen() {
 # ==========================================================
 # Asks for a site and an IP address, shows what AdGuard Home already has
 # for the site's domain and, after a confirmed summary, adds one exact
-# rewrite. Any exact rewrite for the domain stops it: existing records are
-# never changed here. AdGuard Home is contacted only once the IP is given.
+# rewrite. Any exact rewrite for the domain stops it, and so does a record
+# that cannot be read (it might be one): existing records are never changed
+# here. AdGuard Home is contacted only once the IP is given.
 adguard_add_screen() {
     ui_screen "DNS (AdGuard Home)" "Add rewrite"
     adguard_require_config || { pause; return 1; }
@@ -1003,6 +1010,11 @@ adguard_add_screen() {
 
     echo
     adguard_fetch_view || { pause; return 1; }
+    if ! adguard_list_complete; then
+        msg_warning "The rewrite was not added"
+        pause
+        return 1
+    fi
     adguard_match "$domain"
     if ((${#AG_EXACT[@]})); then
         adguard_add_blocked "$domain" "$answer"

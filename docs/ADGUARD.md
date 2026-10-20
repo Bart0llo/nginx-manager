@@ -232,8 +232,11 @@ review the summary and confirm. One exact rewrite is added.
   (default no) that the exact rewrite should take precedence for this
   domain.
 * AdGuard Home stores the domain in lowercase; the summary says so.
-* If an exact rewrite appears between the summary and sending, nothing is
-  sent.
+* If any record in the list could not be read, nothing is added: it might
+  be an exact rewrite for the domain, and adding another could duplicate
+  it. The unreadable record is not changed either.
+* If an exact rewrite or an unreadable record appears between the summary
+  and sending, nothing is sent.
 
 ### Edit rewrite
 
@@ -324,8 +327,8 @@ domain, answers and result, never the password.
 * **"cannot edit rewrites":** update AdGuard Home to v0.107.33 or later,
   or change the record in AdGuard Home.
 * **"record(s) could not be read" / "skipped":** a rewrite has an
-  unexpected form; review the rewrites in AdGuard Home. Edit and Delete
-  stay blocked until then.
+  unexpected form; review the rewrites in AdGuard Home. Add, Edit and
+  Delete stay blocked until then.
 * **Accepted but not confirmed:** read the list again with Your sites' DNS
   and compare it with Filters › DNS rewrites in AdGuard Home before
   repeating the change.
