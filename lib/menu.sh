@@ -113,7 +113,8 @@ help_screen() {
     echo "  NO_COLOR=1                       no colours"
 
     ui_section "Documentation"
-    echo "  README.md (configuration, TLS, updating) and docs/PLUGINS.md (plugins)"
+    echo "  README.md (configuration, TLS, updating), docs/PLUGINS.md (plugins)"
+    echo "  and docs/ADGUARD.md (DNS rewrites in AdGuard Home)"
     ui_kv "Version" "$NM_VERSION"
     pause
 }

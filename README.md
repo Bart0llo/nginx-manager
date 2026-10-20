@@ -14,6 +14,7 @@ Bash CLI for managing NGINX reverse proxy sites on Debian and Ubuntu.
 * Basic system checks
 * JSON-based site database
 * Plugins (site validation, extra nginx directives, change notifications)
+* Optional AdGuard Home DNS rewrites for site domains
 
 ## Installation
 
@@ -279,6 +280,22 @@ configuration until a site is edited or regenerated.
 Plugins run as root with the manager's privileges and are not sandboxed:
 install only plugins you trust. See [docs/PLUGINS.md](docs/PLUGINS.md)
 for the format, the hook contract and the example plugin.
+
+## DNS (AdGuard Home)
+
+The main menu -> DNS (AdGuard Home) shows, adds, changes and removes
+[AdGuard Home](https://github.com/AdguardTeam/AdGuardHome) DNS rewrites
+for your sites' domains, so that they resolve to this NGINX server. It is
+optional and does nothing until a connection is set there; Pi-hole is not
+supported. Every change is confirmed first and checked by reading
+AdGuard Home's rewrite list back. Rewrites are never synchronised
+automatically, and nginx is never changed by them.
+
+The connection is stored in `/etc/nginx-manager/adguard.conf`, the
+password in `/etc/nginx-manager/secrets/adguard.password` (both `0600`).
+HTTPS certificates are always verified against the system's trusted
+certificates. See [docs/ADGUARD.md](docs/ADGUARD.md) for the setup, how
+rewrites are matched and changed, and troubleshooting.
 
 ## TLS
 
